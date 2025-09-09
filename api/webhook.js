@@ -1028,6 +1028,13 @@ export default async function handler(req, res) {
         if (decryptedBody.action === 'ping') {
           console.log('Processing ping/health check...');
           responsePayload = await handleHealthCheck();
+          
+          // Health checks don't need encryption - return plain JSON
+          console.log('=== SENDING HEALTH CHECK RESPONSE ===');
+          console.log('Health check response:', JSON.stringify(responsePayload, null, 2));
+          
+          res.setHeader('Content-Type', 'application/json');
+          return res.status(200).json(responsePayload);
         } else if (decryptedBody.action === 'error_notification') {
           console.log('Processing error notification...');
           responsePayload = await handleErrorNotification(decryptedBody);
@@ -1039,11 +1046,18 @@ export default async function handler(req, res) {
           responsePayload = await handleDataExchange(decryptedBody);
         }
 
+        // For non-ping actions, encrypt the response
         console.log('=== ENCRYPTING RESPONSE ===');
         const encryptedResponse = await encryptResponse(responsePayload, aesKeyBuffer, initialVectorBuffer);
         console.log('✅ Response encrypted successfully');
 
-        res.setHeader('Content-Type', 'application/json');
+        console.log('=== SENDING ENCRYPTED RESPONSE TO META ===');
+        console.log('Encrypted response length:', encryptedResponse.length);
+        console.log('Response payload:', JSON.stringify(responsePayload, null, 2));
+        
+        // Meta expects the encrypted response as a raw string (not JSON)
+        res.setHeader('Content-Type', 'text/plain');
+        console.log('✅ Sending encrypted response to Meta...');
         return res.status(200).send(encryptedResponse);
         
       } catch (decryptError) {
