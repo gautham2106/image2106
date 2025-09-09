@@ -1,6 +1,4 @@
-// Vercel Node.js API Route for WhatsApp Flow with Gemini API
-// Place this file at: api/webhook.js
-
+import { NextRequest, NextResponse } from 'next/server';
 import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
@@ -35,7 +33,7 @@ function validateEnvironmentVars() {
   }
 }
 
-async function importPrivateKey(privateKeyPem) {
+async function importPrivateKey(privateKeyPem: string) {
   const { webcrypto } = await import('crypto');
   const crypto = webcrypto;
   
@@ -51,7 +49,7 @@ async function importPrivateKey(privateKeyPem) {
 }
 
 // --- Encryption/Decryption Functions ---
-async function decryptRequest(body, privateKey) {
+async function decryptRequest(body: any, privateKey: CryptoKey) {
   const { webcrypto } = await import('crypto');
   const crypto = webcrypto;
   
@@ -93,7 +91,7 @@ async function decryptRequest(body, privateKey) {
   }
 }
 
-async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
+async function encryptResponse(response: any, aesKeyBuffer: Uint8Array, initialVectorBuffer: Buffer) {
   const { webcrypto } = await import('crypto');
   const crypto = webcrypto;
   
@@ -122,7 +120,7 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
 }
 
 // WhatsApp Image Decryption (CBC + HMAC 10-byte trailer, HMAC over iv|ciphertext)
-async function decryptWhatsAppImage(imageData) {
+async function decryptWhatsAppImage(imageData: any) {
   console.log('=== DECRYPT WHATSAPP IMAGE (CBC+HMAC-10) ===');
   console.log('Image data:', JSON.stringify(imageData, null, 2));
 
@@ -207,7 +205,7 @@ async function decryptWhatsAppImage(imageData) {
 }
 
 // Upload to Supabase Storage via S3-compatible API (SigV4)
-async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
+async function uploadGeneratedImageToSupabase(base64Data: string, mimeType: string) {
   const supabaseUrl = process.env.SUPABASE_URL;
   const s3Endpoint = process.env.SUPABASE_S3_ENDPOINT; // e.g. https://<ref>.storage.supabase.co/storage/v1/s3
   const s3Region = process.env.SUPABASE_S3_REGION || 'us-east-1';
@@ -244,7 +242,7 @@ async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
 }
 
 // Simple prompt creation function
-function createSimplePrompt(productCategory, sceneDescription = null, priceOverlay = null) {
+function createSimplePrompt(productCategory: string, sceneDescription: string | null = null, priceOverlay: string | null = null) {
   let prompt = `Create a professional product photo of this ${productCategory}.`;
   
   if (sceneDescription && sceneDescription.trim()) {
@@ -263,7 +261,7 @@ function createSimplePrompt(productCategory, sceneDescription = null, priceOverl
 }
 
 // Simplified Gemini API call
-async function generateImageFromAi(productImageBase64, productCategory, sceneDescription = null, priceOverlay = null) {
+async function generateImageFromAi(productImageBase64: string, productCategory: string, sceneDescription: string | null = null, priceOverlay: string | null = null) {
   console.log('=== GENERATE IMAGE FROM AI ===');
   console.log('Parameters:');
   console.log('- productImageBase64 length:', productImageBase64 ? productImageBase64.length : 0);
@@ -370,7 +368,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
       }
     }
 
-    const textPart = candidate.content.parts.find((p) => p.text);
+    const textPart = candidate.content.parts.find((p: any) => p.text);
     if (textPart) {
       throw new Error(`Model returned text instead of image: ${textPart.text}`);
     }
@@ -383,7 +381,8 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 }
 
 // --- WhatsApp helpers ---
-function getUserPhoneFromPayload(decryptedBody) {
+// Replace your current getUserPhoneFromPayload with this
+function getUserPhoneFromPayload(decryptedBody: any) {
   const candidates = [
     decryptedBody?.user?.wa_id,
     decryptedBody?.user?.phone,
@@ -405,7 +404,7 @@ function getUserPhoneFromPayload(decryptedBody) {
   return digits; // assume already E.164 without plus
 }
 
-async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
+async function sendWhatsAppImageMessage(toE164: string, imageUrl: string, caption: string) {
   if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
   if (!imageUrl) throw new Error('Missing image URL');
 
@@ -436,77 +435,88 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
   return data;
 }
 
-async function sendWhatsAppTextMessage(toE164, message) {
-  if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
-  if (!message) throw new Error('Missing message text');
-
-  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: toE164,
-      type: 'text',
-      text: { body: message }
-    })
-  });
-
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(`WhatsApp send failed ${resp.status}: ${JSON.stringify(data)}`);
-  }
-  return data;
-}
-
-// ASYNC BACKGROUND PROCESSING FUNCTION
-async function processImageGenerationAsync(imageData, productCategory, sceneDescription, priceOverlay, userPhone) {
-  console.log('🚀 Starting async image generation...');
+// --- Background Image Processing ---
+async function processImageGenerationInBackground(decryptedBody: any, data: any) {
+  console.log('=== BACKGROUND IMAGE PROCESSING STARTED ===');
   
   try {
-    // Send "processing" message to user
-    if (userPhone) {
-      await sendWhatsAppTextMessage(userPhone, 
-        "🎨 Creating your amazing product scene... This may take a few moments!");
+    const { scene_description, price_overlay, product_image, product_category } = data;
+    
+    // Process the image data
+    let actualImageData;
+    if (Array.isArray(product_image) && product_image.length > 0) {
+      console.log('Processing WhatsApp image array in background');
+      const firstImage = product_image[0];
+      
+      if (firstImage.encryption_metadata) {
+        console.log('Decrypting WhatsApp encrypted image in background...');
+        actualImageData = await decryptWhatsAppImage(firstImage);
+      } else if (firstImage.cdn_url) {
+        console.log('Fetching unencrypted image from CDN in background...');
+        const response = await fetch(firstImage.cdn_url);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image: ${response.status}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        actualImageData = Buffer.from(arrayBuffer).toString('base64');
+      } else {
+        throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
+      }
+    } else if (typeof product_image === 'string') {
+      console.log('Processing direct base64 string in background...');
+      actualImageData = product_image;
+    } else {
+      throw new Error('Invalid product_image format: expected array or string');
     }
-
+    
+    console.log('✅ Background image processing successful');
+    
+    // Generate the image
     const imageUrl = await generateImageFromAi(
-      imageData,
-      productCategory.trim(),
-      sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
-      priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
+      actualImageData,
+      product_category.trim(),
+      scene_description && scene_description.trim() ? scene_description.trim() : null,
+      price_overlay && price_overlay.trim() ? price_overlay.trim() : null
     );
     
-    console.log('✅ Async image generation successful:', imageUrl);
+    console.log('✅ Background image generation successful:', imageUrl);
 
-    // Send generated image to user
-    if (userPhone) {
-      const caption = (priceOverlay && priceOverlay.trim())
-        ? `🎉 Here's your ${productCategory.trim()} — ${priceOverlay.trim()}`
-        : `🎉 Here's your ${productCategory.trim()}!`;
-      
-      await sendWhatsAppImageMessage(userPhone, imageUrl, caption);
-      console.log('✅ Generated image sent to user via WhatsApp');
+    // Send to user on WhatsApp
+    try {
+      const toPhone = getUserPhoneFromPayload(decryptedBody);
+      if (!toPhone) {
+        console.warn('Phone number not found in payload; skipping WhatsApp send');
+      } else {
+        const caption = (price_overlay && price_overlay.trim())
+          ? `${product_category.trim()} — ${price_overlay.trim()}`
+          : product_category.trim();
+        const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
+        console.log('✅ WhatsApp image sent in background:', JSON.stringify(waResp));
+      }
+    } catch (sendErr) {
+      console.error('❌ Failed to send WhatsApp image in background:', sendErr);
     }
-
-  } catch (error) {
-    console.error('❌ Async image generation failed:', error);
     
-    // Send error message to user
-    if (userPhone) {
-      await sendWhatsAppTextMessage(userPhone, 
-        "😞 Sorry, there was an issue generating your image. Please try again later or contact support.");
+    console.log('=== BACKGROUND IMAGE PROCESSING COMPLETED ===');
+    
+  } catch (error) {
+    console.error('❌ Background image processing failed:', error);
+    
+    // Send error message to user via WhatsApp
+    try {
+      const toPhone = getUserPhoneFromPayload(decryptedBody);
+      if (toPhone) {
+        await sendWhatsAppImageMessage(toPhone, 'https://via.placeholder.com/400x400/ff6b6b/ffffff?text=Generation+Failed', 
+          `Sorry, image generation failed: ${error.message}. Please try again.`);
+      }
+    } catch (sendErr) {
+      console.error('❌ Failed to send error message via WhatsApp:', sendErr);
     }
   }
 }
 
 // --- Request Handlers ---
-async function handleDataExchange(decryptedBody) {
+async function handleDataExchange(decryptedBody: any) {
   const { action, screen, data } = decryptedBody;
   console.log(`Processing action: ${action} for screen: ${screen}`);
   console.log('Data received:', JSON.stringify(data, null, 2));
@@ -519,14 +529,13 @@ async function handleDataExchange(decryptedBody) {
     console.log('=== DATA EXCHANGE ACTION ===');
 
     if (data && typeof data === 'object') {
-      const { scene_description, price_overlay, product_image, product_category, mobile_number } = data;
+      const { scene_description, price_overlay, product_image, product_category } = data;
 
       console.log('=== FIELD VALIDATION ===');
       console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
       console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
       console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
       console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
-      console.log('mobile_number:', mobile_number ? `"${mobile_number}"` : 'not provided');
 
       if (!product_image) {
         return {
@@ -542,72 +551,20 @@ async function handleDataExchange(decryptedBody) {
         };
       }
 
-      let actualImageData;
-      try {
-        console.log('=== IMAGE PROCESSING ===');
-        
-        if (Array.isArray(product_image) && product_image.length > 0) {
-          console.log('Processing WhatsApp image array');
-          const firstImage = product_image[0];
-          
-          if (firstImage.encryption_metadata) {
-            console.log('Decrypting WhatsApp encrypted image...');
-            actualImageData = await decryptWhatsAppImage(firstImage);
-          } else if (firstImage.cdn_url) {
-            console.log('Fetching unencrypted image from CDN...');
-            const response = await fetch(firstImage.cdn_url);
-            if (!response.ok) {
-              throw new Error(`Failed to fetch image: ${response.status}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
-            actualImageData = Buffer.from(arrayBuffer).toString('base64');
-          } else {
-            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
-          }
-        } else if (typeof product_image === 'string') {
-          console.log('Processing direct base64 string...');
-          actualImageData = product_image;
-        } else {
-          throw new Error('Invalid product_image format: expected array or string');
-        }
-        
-        console.log('✅ Image processing successful');
-        
-      } catch (imageError) {
-        console.error('❌ Image processing failed:', imageError);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
-        };
-      }
-
-      // GET USER PHONE FOR ASYNC MESSAGING
-      const userPhone = getUserPhoneFromPayload(decryptedBody) || mobile_number;
-      console.log('User phone for async messaging:', userPhone);
-
-      // IMMEDIATELY RETURN SUCCESS AND START ASYNC PROCESSING
-      console.log('🚀 Starting async image generation process...');
-      
-      // Don't await this - let it run in background
-      processImageGenerationAsync(
-        actualImageData,
-        product_category,
-        scene_description,
-        price_overlay,
-        userPhone
-      ).catch(error => {
+      // Start background processing immediately (don't await)
+      console.log('🚀 Starting background image processing...');
+      processImageGenerationInBackground(decryptedBody, data).catch(error => {
         console.error('Background processing error:', error);
       });
 
-      // Return success immediately with placeholder image
+      // Immediately return success screen with placeholder
+      console.log('✅ Returning success screen immediately');
       return { 
         screen: 'SUCCESS_SCREEN', 
         data: { 
-          image_url: 'https://via.placeholder.com/400x400/4CAF50/white?text=Generating...',
-          status: 'processing'
+          image_url: 'https://via.placeholder.com/400x400/4CAF50/ffffff?text=Generating+Your+Image...'
         } 
       };
-
     } else {
       return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
     }
@@ -628,76 +585,90 @@ async function handleHealthCheck() {
   return { data: { status: 'active' } };
 }
 
-async function handleErrorNotification(decryptedBody) {
+async function handleErrorNotification(decryptedBody: any) {
   console.log('Error notification received:', decryptedBody);
   return { data: { acknowledged: true } };
 }
 
 // --- Main Vercel API Handler ---
-export default async function handler(req, res) {
+export async function GET(request: NextRequest) {
   // Handle CORS
-  if (req.method === 'OPTIONS') {
-    res.status(200);
-    Object.entries(corsHeaders).forEach(([key, value]) => {
-      res.setHeader(key, value);
-    });
-    return res.end();
-  }
-
-  // Set CORS headers for all responses
+  const response = new NextResponse();
   Object.entries(corsHeaders).forEach(([key, value]) => {
-    res.setHeader(key, value);
+    response.headers.set(key, value);
   });
 
   try {
     validateEnvironmentVars();
   } catch (error) {
     console.error('Environment validation failed:', error.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 
-  if (req.method === 'GET') {
-    const { query } = req;
-    const mode = query['hub.mode'];
-    const token = query['hub.verify_token'];
-    const challenge = query['hub.challenge'];
-    const verifyToken = process.env.VERIFY_TOKEN;
+  const { searchParams } = new URL(request.url);
+  const mode = searchParams.get('hub.mode');
+  const token = searchParams.get('hub.verify_token');
+  const challenge = searchParams.get('hub.challenge');
+  const verifyToken = process.env.VERIFY_TOKEN;
 
-    if (mode === 'subscribe' && token === verifyToken && challenge) {
-      res.setHeader('Content-Type', 'text/plain');
-      return res.status(200).send(challenge);
+  if (mode === 'subscribe' && token === verifyToken && challenge) {
+    return new NextResponse(challenge, { status: 200 });
+  } else {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+}
+
+export async function POST(request: NextRequest) {
+  // Handle CORS
+  if (request.method === 'OPTIONS') {
+    const response = new NextResponse();
+    Object.entries(corsHeaders).forEach(([key, value]) => {
+      response.headers.set(key, value);
+    });
+    return response;
+  }
+
+  // Set CORS headers for all responses
+  const response = new NextResponse();
+  Object.entries(corsHeaders).forEach(([key, value]) => {
+    response.headers.set(key, value);
+  });
+
+  try {
+    validateEnvironmentVars();
+  } catch (error) {
+    console.error('Environment validation failed:', error.message);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  }
+
+  try {
+    const requestBody = await request.json();
+
+    const privateKeyPem = process.env.PRIVATE_KEY!;
+    const privateKey = await importPrivateKey(privateKeyPem);
+
+    const { decryptedBody, aesKeyBuffer, initialVectorBuffer } = await decryptRequest(requestBody, privateKey);
+
+    let responsePayload;
+    if (decryptedBody.action === 'ping') {
+      responsePayload = await handleHealthCheck();
+    } else if (decryptedBody.action === 'error_notification') {
+      responsePayload = await handleErrorNotification(decryptedBody);
     } else {
-      return res.status(403).json({ error: 'Forbidden' });
+      responsePayload = await handleDataExchange(decryptedBody);
     }
-  }
 
-  if (req.method === 'POST') {
-    try {
-      const requestBody = req.body;
+    const encryptedResponse = await encryptResponse(responsePayload, aesKeyBuffer, initialVectorBuffer);
 
-      const privateKeyPem = process.env.PRIVATE_KEY;
-      const privateKey = await importPrivateKey(privateKeyPem);
-
-      const { decryptedBody, aesKeyBuffer, initialVectorBuffer } = await decryptRequest(requestBody, privateKey);
-
-      let responsePayload;
-      if (decryptedBody.action === 'ping') {
-        responsePayload = await handleHealthCheck();
-      } else if (decryptedBody.action === 'error_notification') {
-        responsePayload = await handleErrorNotification(decryptedBody);
-      } else {
-        responsePayload = await handleDataExchange(decryptedBody);
+    return new NextResponse(encryptedResponse, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        ...corsHeaders
       }
-
-      const encryptedResponse = await encryptResponse(responsePayload, aesKeyBuffer, initialVectorBuffer);
-
-      res.setHeader('Content-Type', 'application/json');
-      return res.status(200).send(encryptedResponse);
-    } catch (error) {
-      console.error('Error processing request:', error);
-      return res.status(500).json({ error: `Internal Server Error: ${error.message}` });
-    }
+    });
+  } catch (error) {
+    console.error('Error processing request:', error);
+    return NextResponse.json({ error: `Internal Server Error: ${error.message}` }, { status: 500 });
   }
-
-  return res.status(405).json({ error: 'Method Not Allowed' });
 }
