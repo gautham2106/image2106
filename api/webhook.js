@@ -391,7 +391,9 @@ function getUserPhoneFromPayload(decryptedBody) {
     decryptedBody?.mobile_number,
     decryptedBody?.data?.phone_number,
     decryptedBody?.data?.user_phone,
-    decryptedBody?.data?.mobile_number
+    decryptedBody?.data?.mobile_number,
+    decryptedBody?.data?.mobile_number, // from flow form data
+    decryptedBody?.session?.data?.mobile_number
   ];
 
   const raw = candidates.find((v) => typeof v === 'string' && v.trim().length > 0);
