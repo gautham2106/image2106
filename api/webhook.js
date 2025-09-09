@@ -11,6 +11,11 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
 };
 
+// WhatsApp API config
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
+
 // --- Utility Functions ---
 function validateEnvironmentVars() {
   const requiredVars = [
@@ -20,7 +25,9 @@ function validateEnvironmentVars() {
     'GEMINI_API_KEY',
     'SUPABASE_S3_ENDPOINT',
     'SUPABASE_S3_ACCESS_KEY_ID',
-    'SUPABASE_S3_SECRET_ACCESS_KEY'
+    'SUPABASE_S3_SECRET_ACCESS_KEY',
+    'WHATSAPP_TOKEN',
+    'WHATSAPP_PHONE_NUMBER_ID'
   ];
   const missing = requiredVars.filter((varName) => !process.env[varName]);
   if (missing.length > 0) {
@@ -375,6 +382,52 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   }
 }
 
+// --- WhatsApp helpers ---
+function getUserPhoneFromPayload(decryptedBody) {
+  const candidates = [
+    decryptedBody?.user?.wa_id,
+    decryptedBody?.user?.phone,
+    decryptedBody?.phone_number,
+    decryptedBody?.data?.phone_number,
+    decryptedBody?.data?.user_phone
+  ];
+  const candidate = candidates.find((v) => typeof v === 'string' && v.trim().length > 0);
+  if (!candidate) return null;
+  const digitsOnly = candidate.replace(/\D/g, '');
+  return digitsOnly || null;
+}
+
+async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
+  if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
+  if (!imageUrl) throw new Error('Missing image URL');
+
+  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: toE164,
+      type: 'image',
+      image: {
+        link: imageUrl,
+        caption: caption || ''
+      }
+    })
+  });
+
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(`WhatsApp send failed ${resp.status}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
 // --- Request Handlers ---
 async function handleDataExchange(decryptedBody) {
   const { action, screen, data } = decryptedBody;
@@ -461,6 +514,23 @@ async function handleDataExchange(decryptedBody) {
         );
         
         console.log('✅ Image generation successful:', imageUrl);
+
+        // Send to user on WhatsApp using Supabase public URL
+        try {
+          const toPhone = getUserPhoneFromPayload(decryptedBody);
+          if (!toPhone) {
+            console.warn('Phone number not found in payload; skipping WhatsApp send');
+          } else {
+            const caption = (price_overlay && price_overlay.trim())
+              ? `${product_category.trim()} — ${price_overlay.trim()}`
+              : product_category.trim();
+            const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
+            console.log('✅ WhatsApp image sent:', JSON.stringify(waResp));
+          }
+        } catch (sendErr) {
+          console.error('❌ Failed to send WhatsApp image:', sendErr);
+        }
+
         return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
       } catch (e) {
         console.error('❌ Image generation failed:', e);
