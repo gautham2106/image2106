@@ -51,7 +51,7 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-           {
+          {
             "type": "TextHeading",
             "text": "🎨 Design Your Product Scene"
           },
@@ -70,14 +70,12 @@
             "type": "TextArea",
             "name": "scene_description",
             "label": "Scene Description",
-            "required": true,
             "helper-text": "Be specific! e.g., 'A person using the product on a sunny beach with palm trees in background'"
           },
           {
             "type": "TextInput",
             "name": "price_overlay",
             "label": "💰 Price Display",
-            "required": true,
             "helper-text": "e.g., $19.99, ₹1,299, €25.00"
           },
           {
@@ -99,13 +97,13 @@
     },
     {
       "id": "SUCCESS_SCREEN",
-      "title": "Success!",
+      "title": "Processing Your Image",
       "terminal": true,
       "success": true,
       "data": {
         "image_url": {
           "type": "string",
-          "__example__": "https://picsum.photos/400/400"
+          "__example__": "https://via.placeholder.com/400x400/4CAF50/white?text=Generating..."
         }
       },
       "layout": {
@@ -113,11 +111,11 @@
         "children": [
           {
             "type": "TextHeading",
-            "text": "🎉 Image Generated Successfully!"
+            "text": "🎉 Request Submitted Successfully!"
           },
           {
             "type": "TextBody",
-            "text": "Here's your product in the scene you described:"
+            "text": "🎨 We're creating your amazing product scene right now! This process typically takes 10-30 seconds."
           },
           {
             "type": "Image",
@@ -125,19 +123,23 @@
           },
           {
             "type": "TextBody",
-            "text": "💡 Tip: Save this image to your gallery or share it directly!"
+            "text": "📱 You'll receive your generated image directly in this WhatsApp chat in just a moment!"
           },
           {
-             "type": "Footer",
-             "label": "Perfect! ✓",
-             "on-click-action": {
-               "name": "complete",
-               "payload": {
-                 "generated_image": "${data.image_url}",
-                 "mobile_number": "${screen.COLLECT_INFO.form.mobile_number}",
-                 "product_category": "${screen.COLLECT_INFO.form.product_category}"
-               }
-             }
+            "type": "TextBody",
+            "text": "💡 Tip: Keep this chat open to receive your beautiful product image!"
+          },
+          {
+            "type": "Footer",
+            "label": "Got it! ✓",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "status": "processing",
+                "mobile_number": "${screen.COLLECT_INFO.form.mobile_number}",
+                "product_category": "${screen.COLLECT_INFO.form.product_category}"
+              }
+            }
           }
         ]
       }
