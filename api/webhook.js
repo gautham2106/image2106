@@ -375,44 +375,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   }
 }
 
-// --- Background processor (NEW) ---
-async function processGenerationInBackground(data) {
-  try {
-    const { scene_description, price_overlay, product_image, product_category } = data;
-
-    let actualImageData;
-    if (Array.isArray(product_image) && product_image.length > 0) {
-      const firstImage = product_image[0];
-      if (firstImage.encryption_metadata) {
-        actualImageData = await decryptWhatsAppImage(firstImage);
-      } else if (firstImage.cdn_url) {
-        const response = await fetch(firstImage.cdn_url);
-        if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
-        const arrayBuffer = await response.arrayBuffer();
-        actualImageData = Buffer.from(arrayBuffer).toString('base64');
-      } else {
-        throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
-      }
-    } else if (typeof product_image === 'string') {
-      actualImageData = product_image;
-    } else {
-      throw new Error('Invalid product_image format: expected array or string');
-    }
-
-    const imageUrl = await generateImageFromAi(
-      actualImageData,
-      (product_category || '').trim(),
-      scene_description && scene_description.trim() ? scene_description.trim() : null,
-      price_overlay && price_overlay.trim() ? price_overlay.trim() : null
-    );
-
-    // TODO: send imageUrl back to the user via your messaging pipeline
-    console.log('Background generation complete. URL:', imageUrl);
-  } catch (err) {
-    console.error('Background generation failed:', err);
-  }
-}
-
 // --- Request Handlers ---
 async function handleDataExchange(decryptedBody) {
   const { action, screen, data } = decryptedBody;
@@ -424,9 +386,92 @@ async function handleDataExchange(decryptedBody) {
   }
 
   if (action === 'data_exchange') {
-    // Fire-and-forget so UI can navigate immediately
-    processGenerationInBackground(data).catch((e) => console.error('Background task error:', e));
-    return { screen: 'SUCCESS_SCREEN', data: {} };
+    console.log('=== DATA EXCHANGE ACTION ===');
+
+    if (data && typeof data === 'object') {
+      const { scene_description, price_overlay, product_image, product_category } = data;
+
+      console.log('=== FIELD VALIDATION ===');
+      console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
+      console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
+      console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
+      console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
+
+      if (!product_image) {
+        return {
+          screen: 'COLLECT_IMAGE_SCENE',
+          data: { error_message: "Product image is required. Please upload an image of your product." }
+        };
+      }
+
+      if (!product_category || !product_category.trim()) {
+        return {
+          screen: 'COLLECT_INFO',
+          data: { error_message: "Product category is required. Please specify what type of product this is." }
+        };
+      }
+
+      let actualImageData;
+      try {
+        console.log('=== IMAGE PROCESSING ===');
+        
+        if (Array.isArray(product_image) && product_image.length > 0) {
+          console.log('Processing WhatsApp image array');
+          const firstImage = product_image[0];
+          
+          if (firstImage.encryption_metadata) {
+            console.log('Decrypting WhatsApp encrypted image...');
+            actualImageData = await decryptWhatsAppImage(firstImage);
+          } else if (firstImage.cdn_url) {
+            console.log('Fetching unencrypted image from CDN...');
+            const response = await fetch(firstImage.cdn_url);
+            if (!response.ok) {
+              throw new Error(`Failed to fetch image: ${response.status}`);
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            actualImageData = Buffer.from(arrayBuffer).toString('base64');
+          } else {
+            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
+          }
+        } else if (typeof product_image === 'string') {
+          console.log('Processing direct base64 string...');
+          actualImageData = product_image;
+        } else {
+          throw new Error('Invalid product_image format: expected array or string');
+        }
+        
+        console.log('✅ Image processing successful');
+        
+      } catch (imageError) {
+        console.error('❌ Image processing failed:', imageError);
+        return {
+          screen: 'COLLECT_IMAGE_SCENE',
+          data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
+        };
+      }
+
+      console.log('🚀 Proceeding with image generation...');
+      
+      try {
+        const imageUrl = await generateImageFromAi(
+          actualImageData,
+          product_category.trim(),
+          scene_description && scene_description.trim() ? scene_description.trim() : null,
+          price_overlay && price_overlay.trim() ? price_overlay.trim() : null
+        );
+        
+        console.log('✅ Image generation successful:', imageUrl);
+        return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
+      } catch (e) {
+        console.error('❌ Image generation failed:', e);
+        return {
+          screen: 'COLLECT_IMAGE_SCENE',
+          data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
+        };
+      }
+    } else {
+      return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
+    }
   }
 
   if (action === 'BACK') {
