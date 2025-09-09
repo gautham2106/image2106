@@ -114,6 +114,11 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
 
 // Helper function to upload user's reference image to Supabase
 async function uploadReferenceImageToSupabase(base64Data) {
+  console.log('=== SUPABASE UPLOAD DEBUG ===');
+  console.log('Input base64Data type:', typeof base64Data);
+  console.log('Input base64Data length:', base64Data ? base64Data.length : 0);
+  console.log('Input base64Data preview:', base64Data ? base64Data.substring(0, 100) + '...' : 'null/undefined');
+  
   const { createClient } = await import('@supabase/supabase-js');
   const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -123,24 +128,31 @@ async function uploadReferenceImageToSupabase(base64Data) {
   try {
     // Validate input
     if (!base64Data || typeof base64Data !== 'string') {
+      console.log('❌ SUPABASE ERROR: Invalid base64 data provided');
       throw new Error('Invalid base64 data provided');
     }
 
     // Clean the base64 data - remove data URL prefix if present
     let cleanBase64 = base64Data;
     if (base64Data.startsWith && base64Data.startsWith('data:')) {
+      console.log('🔧 Removing data URL prefix...');
       const base64Index = base64Data.indexOf(',');
       if (base64Index !== -1) {
         cleanBase64 = base64Data.substring(base64Index + 1);
+        console.log('✅ Data URL prefix removed, new length:', cleanBase64.length);
       }
     }
 
+    console.log('📦 Converting base64 to buffer...');
     // Convert base64 to buffer
     const buffer = Buffer.from(cleanBase64, 'base64');
+    console.log('✅ Buffer created, size:', buffer.length, 'bytes');
     
     // Generate unique filename for reference image
     const filename = `reference-${Date.now()}.jpg`;
+    console.log('📁 Generated filename:', filename);
     
+    console.log('☁️ Uploading to Supabase storage...');
     // Upload to reference-photos bucket
     const { data, error } = await supabase.storage
       .from('reference-photos')
@@ -150,19 +162,22 @@ async function uploadReferenceImageToSupabase(base64Data) {
       });
 
     if (error) {
-      console.error('Supabase reference upload error:', error);
+      console.error('❌ Supabase reference upload error:', error);
       throw new Error(`Reference upload failed: ${error.message}`);
     }
 
+    console.log('✅ Upload successful, getting public URL...');
     // Get public URL
     const { data: publicUrlData } = supabase.storage
       .from('reference-photos')
       .getPublicUrl(filename);
 
-    console.log('Reference image uploaded:', publicUrlData.publicUrl);
+    console.log('✅ Reference image uploaded:', publicUrlData.publicUrl);
+    console.log('============================');
     return publicUrlData.publicUrl;
   } catch (error) {
-    console.error('Error uploading reference image to Supabase:', error);
+    console.error('❌ Error uploading reference image to Supabase:', error);
+    console.log('============================');
     throw error;
   }
 }
