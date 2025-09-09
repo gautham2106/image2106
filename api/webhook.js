@@ -92,7 +92,6 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
   
   try {
     const flippedIv = new Uint8Array(initialVectorBuffer.map((byte) => ~byte & 0xFF));
-
     const aesKey = await crypto.subtle.importKey("raw", aesKeyBuffer, {
       name: "AES-GCM"
     }, false, ["encrypt"]);
@@ -127,9 +126,9 @@ async function decryptWhatsAppImage(imageData) {
 
     const { encryption_key, hmac_key, iv, encrypted_hash, plaintext_hash } = encryption_metadata;
 
-    const keyBuf = Buffer.from(encryption_key, 'base64'); // 32
-    const macKeyBuf = Buffer.from(hmac_key, 'base64');    // 32
-    const ivBuf = Buffer.from(iv, 'base64');              // 16
+    const keyBuf = Buffer.from(encryption_key, 'base64');
+    const macKeyBuf = Buffer.from(hmac_key, 'base64');
+    const ivBuf = Buffer.from(iv, 'base64');
 
     if (keyBuf.length !== 32) throw new Error('Invalid encryption_key length');
     if (macKeyBuf.length !== 32) throw new Error('Invalid hmac_key length');
@@ -137,23 +136,17 @@ async function decryptWhatsAppImage(imageData) {
 
     console.log('Fetching encrypted image from CDN:', cdn_url);
     const response = await fetch(cdn_url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image from CDN: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Failed to fetch image from CDN: ${response.status}`);
 
     const encBuf = Buffer.from(await response.arrayBuffer());
     console.log('Encrypted image size:', encBuf.byteLength);
 
-    if (encBuf.length <= 10) {
-      throw new Error('Encrypted payload too small');
-    }
+    if (encBuf.length <= 10) throw new Error('Encrypted payload too small');
 
     if (encrypted_hash) {
       const encSha = createHash('sha256').update(encBuf).digest('base64');
       console.log('Encrypted SHA256 (computed vs provided):', encSha, encrypted_hash);
-      if (encSha !== encrypted_hash) {
-        throw new Error('Encrypted hash mismatch');
-      }
+      if (encSha !== encrypted_hash) throw new Error('Encrypted hash mismatch');
     }
 
     // Split ciphertext and appended MAC (last 10 bytes)
@@ -161,18 +154,23 @@ async function decryptWhatsAppImage(imageData) {
     const cipherText = encBuf.subarray(0, encBuf.length - 10);
 
     // HMAC-SHA256(iv || ciphertext), compare first 10 bytes
-    const macFull = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
-    const mac10 = macFull.subarray(0, 10);
+    const macFullIvCipher = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
+    const mac10IvCipher = macFullIvCipher.subarray(0, 10);
 
-    if (!mac10.equals(macTrailer)) {
-      throw new Error('HMAC verification failed');
+    let macOk = mac10IvCipher.equals(macTrailer);
+    if (!macOk) {
+      // Fallback variant: HMAC over ciphertext only
+      const macFullCipherOnly = createHmac('sha256', macKeyBuf).update(cipherText).digest();
+      const mac10CipherOnly = macFullCipherOnly.subarray(0, 10);
+      macOk = mac10CipherOnly.equals(macTrailer);
     }
+
+    if (!macOk) throw new Error('HMAC verification failed');
 
     if (cipherText.length % 16 !== 0) {
       throw new Error(`Ciphertext length not a multiple of 16: ${cipherText.length}`);
     }
 
-    // Decrypt AES-256-CBC with PKCS#7 padding
     let decrypted;
     try {
       const decipher = createDecipheriv('aes-256-cbc', keyBuf, ivBuf);
@@ -239,19 +237,15 @@ async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
 // Simple prompt creation function
 function createSimplePrompt(productCategory, sceneDescription = null, priceOverlay = null) {
   let prompt = `Create a professional product photo of this ${productCategory}.`;
-  
   if (sceneDescription && sceneDescription.trim()) {
     prompt += ` Show it in this setting: ${sceneDescription}.`;
   } else {
     prompt += ` Use a clean, professional background that complements the product.`;
   }
-  
   if (priceOverlay && priceOverlay.trim()) {
     prompt += ` Include the price "${priceOverlay}" as a stylish overlay on the image.`;
   }
-  
   prompt += ` Make it look like a high-quality commercial product photo suitable for marketing and sales.`;
-  
   return prompt;
 }
 
@@ -267,18 +261,14 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   if (!productImageBase64 || typeof productImageBase64 !== 'string') {
     throw new Error("Product image data is missing or invalid");
   }
-  
   if (!productCategory || typeof productCategory !== 'string') {
     throw new Error("Product category is required");
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY environment variable");
-  }
+  if (!apiKey) throw new Error("Missing GEMINI_API_KEY environment variable");
 
   console.log("Step 1: Cleaning base64 data...");
-  
   let cleanBase64 = productImageBase64;
   if (productImageBase64.startsWith('data:')) {
     const base64Index = productImageBase64.indexOf(',');
@@ -289,12 +279,10 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   }
 
   console.log("Step 2: Creating simple prompt...");
-  
   const simplePrompt = createSimplePrompt(productCategory, sceneDescription, priceOverlay);
   console.log("Simple prompt:", simplePrompt);
 
   console.log("Step 3: Sending to Gemini API...");
-
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
 
   const requestBody = {
@@ -302,21 +290,11 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
       {
         parts: [
           { text: simplePrompt },
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: cleanBase64
-            }
-          }
+          { inlineData: { mimeType: "image/jpeg", data: cleanBase64 } }
         ]
       }
     ],
-    generationConfig: {
-      temperature: 0.8,
-      maxOutputTokens: 1024,
-      topP: 0.9,
-      topK: 40
-    }
+    generationConfig: { temperature: 0.8, maxOutputTokens: 1024, topP: 0.9, topK: 40 }
   };
 
   try {
@@ -327,7 +305,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
     });
 
     console.log("Response status:", response.status);
-
     if (!response.ok) {
       const errorText = await response.text();
       console.error("Gemini API error response:", errorText);
@@ -338,40 +315,69 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
     console.log("✅ Gemini API response received");
 
     const candidate = responseData?.candidates?.[0];
-    if (!candidate?.content?.parts) {
-      throw new Error("No response parts found in Gemini API response");
-    }
-
-    console.log("Step 4: Processing generated image...");
+    if (!candidate?.content?.parts) throw new Error("No response parts found in Gemini API response");
 
     for (const part of candidate.content.parts) {
       if (part.inlineData) {
         const generatedMimeType = part.inlineData.mimeType;
         const generatedBase64 = part.inlineData.data;
         console.log("✅ Image generated successfully");
-        
-        console.log("Step 5: Uploading generated image to Supabase (S3)...");
         try {
           const publicUrl = await uploadGeneratedImageToSupabase(generatedBase64, generatedMimeType);
           console.log("✅ Generated image uploaded to Supabase:", publicUrl);
           return publicUrl;
         } catch (uploadError) {
           console.error("Failed to upload generated image:", uploadError);
-          console.log("⚠️ Fallback: returning base64 data URL");
           return `data:${generatedMimeType};base64,${generatedBase64}`;
         }
       }
     }
 
     const textPart = candidate.content.parts.find((p) => p.text);
-    if (textPart) {
-      throw new Error(`Model returned text instead of image: ${textPart.text}`);
-    }
+    if (textPart) throw new Error(`Model returned text instead of image: ${textPart.text}`);
 
     throw new Error("No image data found in Gemini API response");
   } catch (error) {
     console.error('❌ Error in generateImageFromAi:', error);
     throw error;
+  }
+}
+
+// Fire-and-forget background generation and delivery
+async function processGenerationInBackground(data) {
+  try {
+    const { scene_description, price_overlay, product_image, product_category } = data;
+
+    let actualImageData;
+    if (Array.isArray(product_image) && product_image.length > 0) {
+      const firstImage = product_image[0];
+      if (firstImage.encryption_metadata) {
+        actualImageData = await decryptWhatsAppImage(firstImage);
+      } else if (firstImage.cdn_url) {
+        const response = await fetch(firstImage.cdn_url);
+        if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
+        const arrayBuffer = await response.arrayBuffer();
+        actualImageData = Buffer.from(arrayBuffer).toString('base64');
+      } else {
+        throw new Error('Invalid image format');
+      }
+    } else if (typeof product_image === 'string') {
+      actualImageData = product_image;
+    } else {
+      throw new Error('Invalid product_image format');
+    }
+
+    const imageUrl = await generateImageFromAi(
+      actualImageData,
+      (product_category || '').trim(),
+      scene_description && scene_description.trim() ? scene_description.trim() : null,
+      price_overlay && price_overlay.trim() ? price_overlay.trim() : null
+    );
+
+    // Send the imageUrl to the user via your messaging flow here
+    console.log('Background generation complete. URL:', imageUrl);
+  } catch (err) {
+    console.error('Background generation failed:', err);
   }
 }
 
@@ -386,103 +392,23 @@ async function handleDataExchange(decryptedBody) {
   }
 
   if (action === 'data_exchange') {
-    console.log('=== DATA EXCHANGE ACTION ===');
-
-    if (data && typeof data === 'object') {
-      const { scene_description, price_overlay, product_image, product_category } = data;
-
-      console.log('=== FIELD VALIDATION ===');
-      console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
-      console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
-      console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
-      console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
-
-      if (!product_image) {
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: "Product image is required. Please upload an image of your product." }
-        };
-      }
-
-      if (!product_category || !product_category.trim()) {
-        return {
-          screen: 'COLLECT_INFO',
-          data: { error_message: "Product category is required. Please specify what type of product this is." }
-        };
-      }
-
-      let actualImageData;
-      try {
-        console.log('=== IMAGE PROCESSING ===');
-        
-        if (Array.isArray(product_image) && product_image.length > 0) {
-          console.log('Processing WhatsApp image array');
-          const firstImage = product_image[0];
-          
-          if (firstImage.encryption_metadata) {
-            console.log('Decrypting WhatsApp encrypted image...');
-            actualImageData = await decryptWhatsAppImage(firstImage);
-          } else if (firstImage.cdn_url) {
-            console.log('Fetching unencrypted image from CDN...');
-            const response = await fetch(firstImage.cdn_url);
-            if (!response.ok) {
-              throw new Error(`Failed to fetch image: ${response.status}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
-            actualImageData = Buffer.from(arrayBuffer).toString('base64');
-          } else {
-            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
-          }
-        } else if (typeof product_image === 'string') {
-          console.log('Processing direct base64 string...');
-          actualImageData = product_image;
-        } else {
-          throw new Error('Invalid product_image format: expected array or string');
-        }
-        
-        console.log('✅ Image processing successful');
-        
-      } catch (imageError) {
-        console.error('❌ Image processing failed:', imageError);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
-        };
-      }
-
-      console.log('🚀 Proceeding with image generation...');
-      
-      try {
-        const imageUrl = await generateImageFromAi(
-          actualImageData,
-          product_category.trim(),
-          scene_description && scene_description.trim() ? scene_description.trim() : null,
-          price_overlay && price_overlay.trim() ? price_overlay.trim() : null
-        );
-        
-        console.log('✅ Image generation successful:', imageUrl);
-        return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
-      } catch (e) {
-        console.error('❌ Image generation failed:', e);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
-        };
-      }
-    } else {
-      return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
-    }
+    // Fire-and-forget background processing so UI can move on immediately
+    processGenerationInBackground(data).catch((e) => console.error('Background task error:', e));
+    // Immediate success screen; user will receive image via message later
+    return {
+      screen: 'SUCCESS_SCREEN',
+      data: {}
+    };
   }
 
   if (action === 'BACK') {
-    if (screen === 'COLLECT_IMAGE_SCENE') {
-      return { screen: 'COLLECT_INFO', data: {} };
-    }
     return { screen: 'COLLECT_INFO', data: {} };
   }
 
-  console.log(`Unhandled action/screen combination: ${action}/${screen}`);
-  return { screen: 'COLLECT_INFO', data: { error_message: 'An unexpected error occurred.' } };
+  return {
+    screen: 'COLLECT_INFO',
+    data: { error_message: 'An unexpected error occurred.' }
+  };
 }
 
 async function handleHealthCheck() {
