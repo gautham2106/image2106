@@ -1,0 +1,146 @@
+{
+  "version": "7.2",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "COLLECT_INFO": ["COLLECT_IMAGE_SCENE"],
+    "COLLECT_IMAGE_SCENE": ["SUCCESS_SCREEN"]
+  },
+  "screens": [
+    {
+      "id": "COLLECT_INFO",
+      "title": "Product Details",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "🛍️ Tell us about your product"
+          },
+          {
+            "type": "TextBody",
+            "text": "We'll create an amazing scene for your product image!"
+          },
+          {
+            "type": "TextInput",
+            "name": "mobile_number",
+            "label": "Your Mobile Number",
+            "input-type": "phone",
+            "helper-text": "For order updates and support"
+          },
+          {
+            "type": "TextInput",
+            "name": "product_category",
+            "label": "Product Category",
+            "required": true,
+            "helper-text": "e.g., Electronics, Fashion, Food"
+          },
+          {
+            "type": "Footer",
+            "label": "Next Step →",
+            "on-click-action": {
+              "name": "navigate",
+              "next": { "type": "screen", "name": "COLLECT_IMAGE_SCENE" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "COLLECT_IMAGE_SCENE",
+      "title": "Create Your Scene",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+           {
+            "type": "TextHeading",
+            "text": "🎨 Design Your Product Scene"
+          },
+          {
+            "type": "TextBody",
+            "text": "Upload your product image and describe the perfect scene!"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "product_image",
+            "label": "📸 Product Image",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1
+          },
+          {
+            "type": "TextArea",
+            "name": "scene_description",
+            "label": "Scene Description",
+            "required": true,
+            "helper-text": "Be specific! e.g., 'A person using the product on a sunny beach with palm trees in background'"
+          },
+          {
+            "type": "TextInput",
+            "name": "price_overlay",
+            "label": "💰 Price Display",
+            "required": true,
+            "helper-text": "e.g., $19.99, ₹1,299, €25.00"
+          },
+          {
+            "type": "Footer",
+            "label": "✨ Generate Image",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "mobile_number": "${screen.COLLECT_INFO.form.mobile_number}",
+                "product_category": "${screen.COLLECT_INFO.form.product_category}",
+                "scene_description": "${form.scene_description}",
+                "price_overlay": "${form.price_overlay}",
+                "product_image": "${form.product_image}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUCCESS_SCREEN",
+      "title": "Success!",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "image_url": {
+          "type": "string",
+          "__example__": "https://picsum.photos/400/400"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "🎉 Image Generated Successfully!"
+          },
+          {
+            "type": "TextBody",
+            "text": "Here's your product in the scene you described:"
+          },
+          {
+            "type": "Image",
+            "src": "${data.image_url}"
+          },
+          {
+            "type": "TextBody",
+            "text": "💡 Tip: Save this image to your gallery or share it directly!"
+          },
+          {
+             "type": "Footer",
+             "label": "Perfect! ✓",
+             "on-click-action": {
+               "name": "complete",
+               "payload": {
+                 "generated_image": "${data.image_url}",
+                 "mobile_number": "${screen.COLLECT_INFO.form.mobile_number}",
+                 "product_category": "${screen.COLLECT_INFO.form.product_category}"
+               }
+             }
+          }
+        ]
+      }
+    }
+  ]
+}
