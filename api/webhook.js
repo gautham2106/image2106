@@ -111,9 +111,9 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
   }
 }
 
-// WhatsApp Image Decryption with authentication and deterministic flow
+// WhatsApp Image Decryption (CBC + HMAC trailer 10 bytes, verify with iv+ciphertext)
 async function decryptWhatsAppImage(imageData) {
-  console.log('=== DECRYPT WHATSAPP IMAGE (deterministic) ===');
+  console.log('=== DECRYPT WHATSAPP IMAGE (CBC+HMAC-10) ===');
   console.log('Image data:', JSON.stringify(imageData, null, 2));
 
   try {
@@ -124,9 +124,9 @@ async function decryptWhatsAppImage(imageData) {
 
     const { encryption_key, hmac_key, iv, encrypted_hash, plaintext_hash } = encryption_metadata;
 
-    const keyBuf = Buffer.from(encryption_key, 'base64');
-    const macKeyBuf = Buffer.from(hmac_key, 'base64');
-    const ivBuf = Buffer.from(iv, 'base64');
+    const keyBuf = Buffer.from(encryption_key, 'base64'); // 32
+    const macKeyBuf = Buffer.from(hmac_key, 'base64');    // 32
+    const ivBuf = Buffer.from(iv, 'base64');              // 16
 
     if (keyBuf.length !== 32) throw new Error('Invalid encryption_key length');
     if (macKeyBuf.length !== 32) throw new Error('Invalid hmac_key length');
@@ -141,33 +141,34 @@ async function decryptWhatsAppImage(imageData) {
     const encBuf = Buffer.from(await response.arrayBuffer());
     console.log('Encrypted image size:', encBuf.byteLength);
 
-    if (encBuf.length <= 32) {
+    if (encBuf.length <= 10) {
       throw new Error('Encrypted payload too small');
     }
 
-    // Split ciphertext and appended HMAC (last 32 bytes)
-    const macFromFile = encBuf.subarray(encBuf.length - 32);
-    const cipherText = encBuf.subarray(0, encBuf.length - 32);
-
-    // Verify HMAC-SHA256. Try common variants.
-    const hmacOverCipherOnly = createHmac('sha256', macKeyBuf).update(cipherText).digest();
-    const hmacOverIvPlusCipher = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
-
-    let hmacOk = false;
-    if (Buffer.compare(macFromFile, hmacOverCipherOnly) === 0) {
-      hmacOk = true;
-      console.log('HMAC verified (ciphertext).');
-    } else if (Buffer.compare(macFromFile, hmacOverIvPlusCipher) === 0) {
-      hmacOk = true;
-      console.log('HMAC verified (iv + ciphertext).');
+    // Verify the provided SHA256 of the encrypted payload if present
+    if (encrypted_hash) {
+      const encSha = createHash('sha256').update(encBuf).digest('base64');
+      console.log('Encrypted SHA256 (computed vs provided):', encSha, encrypted_hash);
+      if (encSha !== encrypted_hash) {
+        throw new Error('Encrypted hash mismatch');
+      }
     }
 
-    if (!hmacOk) {
-      if (encrypted_hash) {
-        const encSha = createHash('sha256').update(encBuf).digest('base64');
-        console.log('Encrypted SHA256 (computed vs provided):', encSha, encrypted_hash);
-      }
+    // Split ciphertext and appended MAC (10 bytes trailer per WA media convention)
+    const macTrailer = encBuf.subarray(encBuf.length - 10);
+    const cipherText = encBuf.subarray(0, encBuf.length - 10);
+
+    // HMAC-SHA256(iv || ciphertext), compare first 10 bytes to trailer
+    const macFull = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
+    const mac10 = macFull.subarray(0, 10);
+
+    if (!mac10.equals(macTrailer)) {
       throw new Error('HMAC verification failed');
+    }
+
+    // Ciphertext length must be multiple of 16 for CBC
+    if (cipherText.length % 16 !== 0) {
+      throw new Error(`Ciphertext length not a multiple of 16: ${cipherText.length}`);
     }
 
     // Decrypt AES-256-CBC with PKCS#7 padding
@@ -180,6 +181,7 @@ async function decryptWhatsAppImage(imageData) {
       throw new Error(`AES decryption failed: ${e.message}`);
     }
 
+    // Optional validation of plaintext hash if provided
     if (plaintext_hash) {
       const plainSha = createHash('sha256').update(decrypted).digest('base64');
       if (plainSha !== plaintext_hash) {
@@ -237,14 +239,12 @@ async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
 function createSimplePrompt(productCategory, sceneDescription = null, priceOverlay = null) {
   let prompt = `Create a professional product photo of this ${productCategory}.`;
   
-  // Add scene description if provided
   if (sceneDescription && sceneDescription.trim()) {
     prompt += ` Show it in this setting: ${sceneDescription}.`;
   } else {
     prompt += ` Use a clean, professional background that complements the product.`;
   }
   
-  // Add price overlay instruction if provided
   if (priceOverlay && priceOverlay.trim()) {
     prompt += ` Include the price "${priceOverlay}" as a stylish overlay on the image.`;
   }
@@ -263,7 +263,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   console.log('- sceneDescription:', sceneDescription || 'not provided');
   console.log('- priceOverlay:', priceOverlay || 'not provided');
   
-  // Validate required parameters
   if (!productImageBase64 || typeof productImageBase64 !== 'string') {
     throw new Error("Product image data is missing or invalid");
   }
@@ -279,7 +278,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 
   console.log("Step 1: Cleaning base64 data...");
   
-  // Clean the base64 data - remove data URL prefix if present
   let cleanBase64 = productImageBase64;
   if (productImageBase64.startsWith('data:')) {
     const base64Index = productImageBase64.indexOf(',');
@@ -291,23 +289,18 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 
   console.log("Step 2: Creating simple prompt...");
   
-  // Create simple prompt
   const simplePrompt = createSimplePrompt(productCategory, sceneDescription, priceOverlay);
   console.log("Simple prompt:", simplePrompt);
 
   console.log("Step 3: Sending to Gemini API...");
 
-  // Use the Gemini REST API endpoint for image generation
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
 
-  // Build request body
   const requestBody = {
     contents: [
       {
         parts: [
-          {
-            text: simplePrompt
-          },
+          { text: simplePrompt },
           {
             inlineData: {
               mimeType: "image/jpeg",
@@ -328,9 +321,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(requestBody)
     });
 
@@ -352,7 +343,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 
     console.log("Step 4: Processing generated image...");
 
-    // Look for image data in response parts
     for (const part of candidate.content.parts) {
       if (part.inlineData) {
         const generatedMimeType = part.inlineData.mimeType;
@@ -360,22 +350,18 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
         console.log("✅ Image generated successfully");
         
         console.log("Step 5: Uploading generated image to Supabase...");
-        
-        // Upload generated image to Supabase
         try {
           const publicUrl = await uploadGeneratedImageToSupabase(generatedBase64, generatedMimeType);
           console.log("✅ Generated image uploaded to Supabase:", publicUrl);
           return publicUrl;
         } catch (uploadError) {
           console.error("Failed to upload generated image:", uploadError);
-          // Fallback: return base64 data URL
           console.log("⚠️ Fallback: returning base64 data URL");
           return `data:${generatedMimeType};base64,${generatedBase64}`;
         }
       }
     }
 
-    // If no image found, check for text response
     const textPart = candidate.content.parts.find((p) => p.text);
     if (textPart) {
       throw new Error(`Model returned text instead of image: ${textPart.text}`);
@@ -395,16 +381,12 @@ async function handleDataExchange(decryptedBody) {
   console.log('Data received:', JSON.stringify(data, null, 2));
 
   if (action === 'INIT') {
-    return {
-      screen: 'COLLECT_INFO',
-      data: {}
-    };
+    return { screen: 'COLLECT_INFO', data: {} };
   }
 
   if (action === 'data_exchange') {
     console.log('=== DATA EXCHANGE ACTION ===');
 
-    // Check if we have the required fields for image generation
     if (data && typeof data === 'object') {
       const { scene_description, price_overlay, product_image, product_category } = data;
 
@@ -414,26 +396,20 @@ async function handleDataExchange(decryptedBody) {
       console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
       console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
 
-      // Validate mandatory fields
       if (!product_image) {
         return {
           screen: 'COLLECT_IMAGE_SCENE',
-          data: {
-            error_message: "Product image is required. Please upload an image of your product."
-          }
+          data: { error_message: "Product image is required. Please upload an image of your product." }
         };
       }
 
       if (!product_category || !product_category.trim()) {
         return {
           screen: 'COLLECT_INFO',
-          data: {
-            error_message: "Product category is required. Please specify what type of product this is."
-          }
+          data: { error_message: "Product category is required. Please specify what type of product this is." }
         };
       }
 
-      // Process image data
       let actualImageData;
       try {
         console.log('=== IMAGE PROCESSING ===');
@@ -469,9 +445,7 @@ async function handleDataExchange(decryptedBody) {
         console.error('❌ Image processing failed:', imageError);
         return {
           screen: 'COLLECT_IMAGE_SCENE',
-          data: {
-            error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.`
-          }
+          data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
         };
       }
 
@@ -486,68 +460,37 @@ async function handleDataExchange(decryptedBody) {
         );
         
         console.log('✅ Image generation successful:', imageUrl);
-        return {
-          screen: 'SUCCESS_SCREEN',
-          data: {
-            image_url: imageUrl
-          }
-        };
+        return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
       } catch (e) {
         console.error('❌ Image generation failed:', e);
         return {
           screen: 'COLLECT_IMAGE_SCENE',
-          data: {
-            error_message: `Image generation failed: ${e.message}. Please try again.`
-          }
+          data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
         };
       }
     } else {
-      return {
-        screen: 'COLLECT_INFO',
-        data: {
-          error_message: 'No data received. Please fill in the form.'
-        }
-      };
+      return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
     }
   }
 
   if (action === 'BACK') {
     if (screen === 'COLLECT_IMAGE_SCENE') {
-      return {
-        screen: 'COLLECT_INFO',
-        data: {}
-      };
+      return { screen: 'COLLECT_INFO', data: {} };
     }
-    return {
-      screen: 'COLLECT_INFO',
-      data: {}
-    };
+    return { screen: 'COLLECT_INFO', data: {} };
   }
 
   console.log(`Unhandled action/screen combination: ${action}/${screen}`);
-  return {
-    screen: 'COLLECT_INFO',
-    data: {
-      error_message: 'An unexpected error occurred.'
-    }
-  };
+  return { screen: 'COLLECT_INFO', data: { error_message: 'An unexpected error occurred.' } };
 }
 
 async function handleHealthCheck() {
-  return {
-    data: {
-      status: 'active'
-    }
-  };
+  return { data: { status: 'active' } };
 }
 
 async function handleErrorNotification(decryptedBody) {
   console.log('Error notification received:', decryptedBody);
-  return {
-    data: {
-      acknowledged: true
-    }
-  };
+  return { data: { acknowledged: true } };
 }
 
 // --- Main Vercel API Handler ---
