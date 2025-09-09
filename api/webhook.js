@@ -1,6 +1,3 @@
-// Vercel Node.js API Route for WhatsApp Flow with Gemini API
-// Place this file at: api/webhook.js
-
 import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
@@ -464,8 +461,8 @@ async function sendWhatsAppTextMessage(toE164, message) {
   return data;
 }
 
-// ASYNC BACKGROUND PROCESSING FUNCTION
-async function processImageGenerationAsync(imageData, productCategory, sceneDescription, priceOverlay, userPhone) {
+// ASYNC BACKGROUND PROCESSING FUNCTION - NOW INCLUDES IMAGE PROCESSING
+async function processImageGenerationAsync(productImage, productCategory, sceneDescription, priceOverlay, userPhone) {
   console.log('🚀 Starting async image generation...');
   
   try {
@@ -475,8 +472,39 @@ async function processImageGenerationAsync(imageData, productCategory, sceneDesc
         "🎨 Creating your amazing product scene... This may take a few moments!");
     }
 
+    // Process image data asynchronously
+    console.log('=== ASYNC IMAGE PROCESSING ===');
+    let actualImageData;
+    
+    if (Array.isArray(productImage) && productImage.length > 0) {
+      console.log('Processing WhatsApp image array');
+      const firstImage = productImage[0];
+      
+      if (firstImage.encryption_metadata) {
+        console.log('Decrypting WhatsApp encrypted image...');
+        actualImageData = await decryptWhatsAppImage(firstImage);
+      } else if (firstImage.cdn_url) {
+        console.log('Fetching unencrypted image from CDN...');
+        const response = await fetch(firstImage.cdn_url);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image: ${response.status}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        actualImageData = Buffer.from(arrayBuffer).toString('base64');
+      } else {
+        throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
+      }
+    } else if (typeof productImage === 'string') {
+      console.log('Processing direct base64 string...');
+      actualImageData = productImage;
+    } else {
+      throw new Error('Invalid product_image format: expected array or string');
+    }
+    
+    console.log('✅ Async image processing successful');
+
     const imageUrl = await generateImageFromAi(
-      imageData,
+      actualImageData,
       productCategory.trim(),
       sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
       priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
@@ -542,45 +570,6 @@ async function handleDataExchange(decryptedBody) {
         };
       }
 
-      let actualImageData;
-      try {
-        console.log('=== IMAGE PROCESSING ===');
-        
-        if (Array.isArray(product_image) && product_image.length > 0) {
-          console.log('Processing WhatsApp image array');
-          const firstImage = product_image[0];
-          
-          if (firstImage.encryption_metadata) {
-            console.log('Decrypting WhatsApp encrypted image...');
-            actualImageData = await decryptWhatsAppImage(firstImage);
-          } else if (firstImage.cdn_url) {
-            console.log('Fetching unencrypted image from CDN...');
-            const response = await fetch(firstImage.cdn_url);
-            if (!response.ok) {
-              throw new Error(`Failed to fetch image: ${response.status}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
-            actualImageData = Buffer.from(arrayBuffer).toString('base64');
-          } else {
-            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
-          }
-        } else if (typeof product_image === 'string') {
-          console.log('Processing direct base64 string...');
-          actualImageData = product_image;
-        } else {
-          throw new Error('Invalid product_image format: expected array or string');
-        }
-        
-        console.log('✅ Image processing successful');
-        
-      } catch (imageError) {
-        console.error('❌ Image processing failed:', imageError);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
-        };
-      }
-
       // GET USER PHONE FOR ASYNC MESSAGING
       const userPhone = getUserPhoneFromPayload(decryptedBody) || mobile_number;
       console.log('User phone for async messaging:', userPhone);
@@ -588,9 +577,9 @@ async function handleDataExchange(decryptedBody) {
       // IMMEDIATELY RETURN SUCCESS AND START ASYNC PROCESSING
       console.log('🚀 Starting async image generation process...');
       
-      // Don't await this - let it run in background
+      // Don't await this - let it run in background with all the data
       processImageGenerationAsync(
-        actualImageData,
+        product_image, // Pass raw image data to async function
         product_category,
         scene_description,
         price_overlay,
