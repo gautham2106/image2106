@@ -383,7 +383,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 }
 
 // --- WhatsApp helpers ---
-// Replace your current getUserPhoneFromPayload with this
 function getUserPhoneFromPayload(decryptedBody) {
   const candidates = [
     decryptedBody?.user?.wa_id,
@@ -437,6 +436,75 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
   return data;
 }
 
+async function sendWhatsAppTextMessage(toE164, message) {
+  if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
+  if (!message) throw new Error('Missing message text');
+
+  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: toE164,
+      type: 'text',
+      text: { body: message }
+    })
+  });
+
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(`WhatsApp send failed ${resp.status}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+// ASYNC BACKGROUND PROCESSING FUNCTION
+async function processImageGenerationAsync(imageData, productCategory, sceneDescription, priceOverlay, userPhone) {
+  console.log('🚀 Starting async image generation...');
+  
+  try {
+    // Send "processing" message to user
+    if (userPhone) {
+      await sendWhatsAppTextMessage(userPhone, 
+        "🎨 Creating your amazing product scene... This may take a few moments!");
+    }
+
+    const imageUrl = await generateImageFromAi(
+      imageData,
+      productCategory.trim(),
+      sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
+      priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
+    );
+    
+    console.log('✅ Async image generation successful:', imageUrl);
+
+    // Send generated image to user
+    if (userPhone) {
+      const caption = (priceOverlay && priceOverlay.trim())
+        ? `🎉 Here's your ${productCategory.trim()} — ${priceOverlay.trim()}`
+        : `🎉 Here's your ${productCategory.trim()}!`;
+      
+      await sendWhatsAppImageMessage(userPhone, imageUrl, caption);
+      console.log('✅ Generated image sent to user via WhatsApp');
+    }
+
+  } catch (error) {
+    console.error('❌ Async image generation failed:', error);
+    
+    // Send error message to user
+    if (userPhone) {
+      await sendWhatsAppTextMessage(userPhone, 
+        "😞 Sorry, there was an issue generating your image. Please try again later or contact support.");
+    }
+  }
+}
+
 // --- Request Handlers ---
 async function handleDataExchange(decryptedBody) {
   const { action, screen, data } = decryptedBody;
@@ -451,13 +519,14 @@ async function handleDataExchange(decryptedBody) {
     console.log('=== DATA EXCHANGE ACTION ===');
 
     if (data && typeof data === 'object') {
-      const { scene_description, price_overlay, product_image, product_category } = data;
+      const { scene_description, price_overlay, product_image, product_category, mobile_number } = data;
 
       console.log('=== FIELD VALIDATION ===');
       console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
       console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
       console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
       console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
+      console.log('mobile_number:', mobile_number ? `"${mobile_number}"` : 'not provided');
 
       if (!product_image) {
         return {
@@ -512,42 +581,33 @@ async function handleDataExchange(decryptedBody) {
         };
       }
 
-      console.log('🚀 Proceeding with image generation...');
+      // GET USER PHONE FOR ASYNC MESSAGING
+      const userPhone = getUserPhoneFromPayload(decryptedBody) || mobile_number;
+      console.log('User phone for async messaging:', userPhone);
+
+      // IMMEDIATELY RETURN SUCCESS AND START ASYNC PROCESSING
+      console.log('🚀 Starting async image generation process...');
       
-      try {
-        const imageUrl = await generateImageFromAi(
-          actualImageData,
-          product_category.trim(),
-          scene_description && scene_description.trim() ? scene_description.trim() : null,
-          price_overlay && price_overlay.trim() ? price_overlay.trim() : null
-        );
-        
-        console.log('✅ Image generation successful:', imageUrl);
+      // Don't await this - let it run in background
+      processImageGenerationAsync(
+        actualImageData,
+        product_category,
+        scene_description,
+        price_overlay,
+        userPhone
+      ).catch(error => {
+        console.error('Background processing error:', error);
+      });
 
-        // Send to user on WhatsApp using Supabase public URL
-        try {
-          const toPhone = getUserPhoneFromPayload(decryptedBody);
-          if (!toPhone) {
-            console.warn('Phone number not found in payload; skipping WhatsApp send');
-          } else {
-            const caption = (price_overlay && price_overlay.trim())
-              ? `${product_category.trim()} — ${price_overlay.trim()}`
-              : product_category.trim();
-            const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
-            console.log('✅ WhatsApp image sent:', JSON.stringify(waResp));
-          }
-        } catch (sendErr) {
-          console.error('❌ Failed to send WhatsApp image:', sendErr);
-        }
+      // Return success immediately with placeholder image
+      return { 
+        screen: 'SUCCESS_SCREEN', 
+        data: { 
+          image_url: 'https://via.placeholder.com/400x400/4CAF50/white?text=Generating...',
+          status: 'processing'
+        } 
+      };
 
-        return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
-      } catch (e) {
-        console.error('❌ Image generation failed:', e);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
-        };
-      }
     } else {
       return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
     }
