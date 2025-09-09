@@ -143,10 +143,48 @@ async function decryptWhatsAppImage(imageData) {
    if (ivBuf.length !== 16) throw new Error('Invalid iv length');
 
    console.log('Fetching encrypted image from CDN:', cdn_url);
-   const response = await fetch(cdn_url);
-   if (!response.ok) {
-     throw new Error(`Failed to fetch image from CDN: ${response.status}`);
-   }
+
+// Add timeout and retry logic
+let response;
+let attempts = 0;
+const maxAttempts = 3;
+const timeoutMs = 15000; // 15 seconds
+
+while (attempts < maxAttempts) {
+  attempts++;
+  console.log(`Fetch attempt ${attempts}/${maxAttempts}...`);
+  
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    response = await fetch(cdn_url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'WhatsApp/2.23.24.76'
+      }
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (response.ok) {
+      console.log(`✅ CDN fetch successful on attempt ${attempts}`);
+      break;
+    } else {
+      console.warn(`CDN fetch failed with status ${response.status} on attempt ${attempts}`);
+      if (attempts === maxAttempts) {
+        throw new Error(`Failed to fetch image from CDN after ${maxAttempts} attempts: ${response.status}`);
+      }
+    }
+  } catch (error) {
+    console.warn(`CDN fetch error on attempt ${attempts}:`, error.message);
+    if (attempts === maxAttempts) {
+      throw new Error(`Failed to fetch image from CDN after ${maxAttempts} attempts: ${error.message}`);
+    }
+    // Wait before retry
+    await new Promise(resolve => setTimeout(resolve, 2000 * attempts));
+  }
+}
 
    const encBuf = Buffer.from(await response.arrayBuffer());
    console.log('Encrypted image size:', encBuf.byteLength);
