@@ -383,18 +383,27 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 }
 
 // --- WhatsApp helpers ---
+// Replace your current getUserPhoneFromPayload with this
 function getUserPhoneFromPayload(decryptedBody) {
   const candidates = [
     decryptedBody?.user?.wa_id,
     decryptedBody?.user?.phone,
     decryptedBody?.phone_number,
+    decryptedBody?.mobile_number,
     decryptedBody?.data?.phone_number,
-    decryptedBody?.data?.user_phone
+    decryptedBody?.data?.user_phone,
+    decryptedBody?.data?.mobile_number
   ];
-  const candidate = candidates.find((v) => typeof v === 'string' && v.trim().length > 0);
-  if (!candidate) return null;
-  const digitsOnly = candidate.replace(/\D/g, '');
-  return digitsOnly || null;
+
+  const raw = candidates.find((v) => typeof v === 'string' && v.trim().length > 0);
+  if (!raw) return null;
+
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return null;
+
+  // Normalize India numbers: if 10 digits, prefix with 91
+  if (digits.length === 10) return `91${digits}`;
+  return digits; // assume already E.164 without plus
 }
 
 async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
