@@ -705,22 +705,22 @@ Generate a masterpiece-quality commercial product image that combines the upload
   return advancedPrompt;
 }
 
-// Gemini API call for Vercel Node.js with enhanced prompting and optional parameters
+// Simplified Gemini API call - hybrid approach (advanced prompting + direct image passing)
 async function generateImageFromAi(productImageBase64, productCategory, sceneDescription = null, priceOverlay = null) {
-  console.log('=== GENERATE IMAGE FROM AI ===');
+  console.log('=== SIMPLIFIED GENERATE IMAGE FROM AI ===');
   console.log('Parameters received:');
-  console.log('- productImageBase64:', productImageBase64 ? 'present' : 'MISSING');
+  console.log('- productImageBase64 length:', productImageBase64 ? productImageBase64.length : 0);
   console.log('- productCategory:', productCategory || 'MISSING');
   console.log('- sceneDescription:', sceneDescription || 'null (will use default)');
   console.log('- priceOverlay:', priceOverlay || 'null (will be omitted)');
   
-  // Validate required parameters with enhanced checking
-  if (!productImageBase64 || typeof productImageBase64 !== 'string' || productImageBase64.trim() === '') {
-    throw new Error("Product image is required but not provided or is invalid");
+  // Validate required parameters
+  if (!productImageBase64 || typeof productImageBase64 !== 'string') {
+    throw new Error("Product image data is missing or invalid");
   }
   
-  if (!productCategory || typeof productCategory !== 'string' || productCategory.trim() === '') {
-    throw new Error("Product category is required but not provided or is invalid");
+  if (!productCategory || typeof productCategory !== 'string') {
+    throw new Error("Product category is required");
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -728,43 +728,41 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
     throw new Error("Missing GEMINI_API_KEY environment variable");
   }
 
-  console.log("Step 1: Uploading reference image to Supabase...");
+  console.log("Step 1: Cleaning base64 data...");
   
-  // First, upload the user's image to reference-photos bucket
-  let referenceImageUrl;
-  try {
-    referenceImageUrl = await uploadReferenceImageToSupabase(productImageBase64);
-    console.log("Reference image uploaded successfully:", referenceImageUrl);
-  } catch (error) {
-    console.error("Failed to upload reference image:", error);
-    throw new Error(`Failed to process reference image: ${error.message}`);
+  // Clean the base64 data - remove data URL prefix if present (DIRECT - no Supabase roundtrip)
+  let cleanBase64 = productImageBase64;
+  if (productImageBase64.startsWith('data:')) {
+    const base64Index = productImageBase64.indexOf(',');
+    if (base64Index !== -1) {
+      cleanBase64 = productImageBase64.substring(base64Index + 1);
+      console.log("✅ Data URL prefix removed, new length:", cleanBase64.length);
+    }
   }
 
-  console.log("Step 2: Creating enhanced prompt based on product category...");
-  console.log(`Scene description: ${sceneDescription ? 'provided' : 'not provided (will use default)'}`);
-  console.log(`Price overlay: ${priceOverlay ? 'provided' : 'not provided (will focus on product)'}`);
+  console.log("Step 2: Creating advanced category-specific prompt...");
   
-  // Create category-specific enhanced prompt with optional parameters
-  const enhancedPrompt = createAdvancedAdaptivePrompt(productCategory, sceneDescription, priceOverlay, referenceImageUrl);
-  console.log("Advanced enhanced prompt created for category:", productCategory);
+  // Create enhanced prompt (keep the advanced prompting)
+  const enhancedPrompt = createAdvancedAdaptivePrompt(productCategory, sceneDescription, priceOverlay, "user-uploaded-image");
+  console.log("✅ Enhanced prompt created for category:", productCategory);
 
-  console.log("Step 3: Sending request to Gemini API with enhanced prompt...");
+  console.log("Step 3: Sending DIRECTLY to Gemini API (no Supabase roundtrip)...");
 
   // Use the Gemini REST API endpoint for image generation
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
 
-  // Build request body using enhanced prompt
+  // Build request body (DIRECT base64 to Gemini - no upload/download)
   const requestBody = {
     contents: [
       {
         parts: [
           {
-            text: enhancedPrompt
+            text: enhancedPrompt  // Enhanced prompt instead of simple text
           },
           {
             inlineData: {
               mimeType: "image/jpeg",
-              data: await getImageAsBase64FromUrl(referenceImageUrl)
+              data: cleanBase64  // DIRECT base64, no Supabase roundtrip
             }
           }
         ]
@@ -777,25 +775,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
       topK: 40
     }
   };
-
-  console.log("Request structure:", JSON.stringify({
-    contents: [
-      {
-        parts: [
-          {
-            text: "[ADVANCED_PROMPT_TRUNCATED]"
-          },
-          {
-            inlineData: {
-              mimeType: requestBody.contents[0].parts[1].inlineData.mimeType,
-              data: "[BASE64_FROM_PUBLIC_URL]"
-            }
-          }
-        ]
-      }
-    ],
-    generationConfig: requestBody.generationConfig
-  }, null, 2));
 
   try {
     const response = await fetch(url, {
@@ -811,16 +790,11 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
     if (!response.ok) {
       const errorText = await response.text();
       console.error("Gemini API error response:", errorText);
-      try {
-        const errorJson = JSON.parse(errorText);
-        throw new Error(`Gemini API failed (${response.status}): ${JSON.stringify(errorJson, null, 2)}`);
-      } catch (parseError) {
-        throw new Error(`Gemini API failed (${response.status}): ${errorText}`);
-      }
+      throw new Error(`Gemini API failed (${response.status}): ${errorText}`);
     }
 
     const responseData = await response.json();
-    console.log("Gemini API response received");
+    console.log("✅ Gemini API response received");
 
     const candidate = responseData?.candidates?.[0];
     if (!candidate?.content?.parts) {
@@ -834,22 +808,26 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
       if (part.inlineData) {
         const generatedMimeType = part.inlineData.mimeType;
         const generatedBase64 = part.inlineData.data;
-        console.log("Image generated successfully, uploading to generated-images bucket...");
+        console.log("✅ Image generated successfully");
         
-        // Upload generated image to generated-images bucket
+        console.log("Step 5: Uploading ONLY generated image to Supabase...");
+        
+        // Upload ONLY generated image to Supabase (for WhatsApp display compatibility)
         try {
           const publicUrl = await uploadGeneratedImageToSupabase(generatedBase64, generatedMimeType);
-          console.log("Generated image uploaded successfully:", publicUrl);
+          console.log("✅ Generated image uploaded to Supabase:", publicUrl);
+          console.log("Step 6: Returning public URL to WhatsApp Flow...");
           return publicUrl;
         } catch (uploadError) {
           console.error("Failed to upload generated image:", uploadError);
-          // Fallback: return base64 (though it won't display in WhatsApp Flow)
+          // Fallback: return base64 data URL
+          console.log("⚠️ Fallback: returning base64 data URL");
           return `data:${generatedMimeType};base64,${generatedBase64}`;
         }
       }
     }
 
-    // If no image found, check for text response (which might indicate an error)
+    // If no image found, check for text response
     const textPart = candidate.content.parts.find((p) => p.text);
     if (textPart) {
       throw new Error(`Model returned text instead of image: ${textPart.text}`);
@@ -857,10 +835,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 
     throw new Error("No image data found in Gemini API response");
   } catch (error) {
-    console.error('Error in generateImageFromAi:', error);
-    if (error.message.includes('fetch')) {
-      throw new Error(`Network error calling Gemini API: ${error.message}`);
-    }
+    console.error('❌ Error in generateImageFromAi:', error);
     throw error;
   }
 }
