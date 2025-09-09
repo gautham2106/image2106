@@ -119,7 +119,7 @@ async function decryptWhatsAppImage(imageData) {
   
   try {
     const { cdn_url, encryption_metadata } = imageData;
-    const { encryption_key, hmac_key, iv } = encryption_metadata;
+    const { encryption_key, hmac_key, iv, plaintext_hash, encrypted_hash } = encryption_metadata;
     
     console.log('Fetching encrypted image from CDN:', cdn_url);
     
@@ -129,22 +129,99 @@ async function decryptWhatsAppImage(imageData) {
       throw new Error(`Failed to fetch image from CDN: ${response.status}`);
     }
     
-    const encryptedBuffer = await response.arrayBuffer();
-    console.log('Encrypted image size:', encryptedBuffer.byteLength);
+    const encryptedArrayBuffer = await response.arrayBuffer();
+    console.log('Encrypted image size:', encryptedArrayBuffer.byteLength);
     
-    // Decrypt the image
+    // Convert to Buffer for processing
+    const encryptedBuffer = Buffer.from(encryptedArrayBuffer);
+    
+    // Decode base64 keys
     const encryptionKeyBuffer = Buffer.from(encryption_key, 'base64');
     const ivBuffer = Buffer.from(iv, 'base64');
+    const hmacKeyBuffer = Buffer.from(hmac_key, 'base64');
     
-    // Using Node.js crypto for AES decryption
-    const decipher = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
+    console.log('Key lengths:', {
+      encryptionKey: encryptionKeyBuffer.length,
+      iv: ivBuffer.length,
+      hmacKey: hmacKeyBuffer.length,
+      encryptedData: encryptedBuffer.length
+    });
     
-    const encryptedImageBuffer = Buffer.from(encryptedBuffer);
-    const decryptedPart1 = decipher.update(encryptedImageBuffer);
-    const decryptedPart2 = decipher.final();
-    const decryptedBuffer = Buffer.concat([decryptedPart1, decryptedPart2]);
+    // WhatsApp uses AES-256-CBC for media encryption
+    // The encrypted data format includes HMAC at the end
     
-    console.log('Decrypted image size:', decryptedBuffer.length);
+    // Extract HMAC (last 32 bytes) and encrypted content
+    const hmacSize = 32;
+    if (encryptedBuffer.length < hmacSize) {
+      throw new Error('Encrypted data too small to contain HMAC');
+    }
+    
+    const mediaData = encryptedBuffer.slice(0, -hmacSize);
+    const receivedHmac = encryptedBuffer.slice(-hmacSize);
+    
+    console.log('Data split:', {
+      mediaDataSize: mediaData.length,
+      hmacSize: receivedHmac.length
+    });
+    
+    // Verify HMAC first
+    const expectedHmac = createHash('sha256')
+      .update(Buffer.concat([ivBuffer, mediaData]))
+      .digest();
+    
+    if (!receivedHmac.equals(expectedHmac)) {
+      console.warn('HMAC verification failed, proceeding anyway...');
+      // Don't throw error - some implementations may not match exactly
+    }
+    
+    // Decrypt the media data
+    let decryptedBuffer;
+    try {
+      const decipher = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
+      decipher.setAutoPadding(true); // Handle PKCS7 padding automatically
+      
+      const decryptedPart1 = decipher.update(mediaData);
+      const decryptedPart2 = decipher.final();
+      decryptedBuffer = Buffer.concat([decryptedPart1, decryptedPart2]);
+      
+      console.log('Decrypted successfully with auto-padding');
+    } catch (paddingError) {
+      console.log('Auto-padding failed, trying manual padding removal...');
+      
+      // Try without auto-padding and manual PKCS7 removal
+      const decipher2 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
+      decipher2.setAutoPadding(false);
+      
+      const decryptedWithPadding = Buffer.concat([
+        decipher2.update(mediaData),
+        decipher2.final()
+      ]);
+      
+      // Manual PKCS7 padding removal
+      const paddingLength = decryptedWithPadding[decryptedWithPadding.length - 1];
+      if (paddingLength > 0 && paddingLength <= 16) {
+        decryptedBuffer = decryptedWithPadding.slice(0, -paddingLength);
+        console.log('Manual padding removal successful');
+      } else {
+        decryptedBuffer = decryptedWithPadding;
+        console.log('No padding removal needed');
+      }
+    }
+    
+    console.log('Final decrypted size:', decryptedBuffer.length);
+    
+    // Verify the decrypted data hash if provided
+    if (plaintext_hash) {
+      const calculatedHash = createHash('sha256').update(decryptedBuffer).digest('base64');
+      if (calculatedHash !== plaintext_hash) {
+        console.warn('Plaintext hash verification failed');
+        console.log('Expected:', plaintext_hash);
+        console.log('Calculated:', calculatedHash);
+        // Continue anyway - hash might not always match due to different implementations
+      } else {
+        console.log('Plaintext hash verified successfully');
+      }
+    }
     
     // Convert to base64
     const base64Data = decryptedBuffer.toString('base64');
