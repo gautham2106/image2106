@@ -436,230 +436,246 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
   return data;
 }
 
-// --- UPDATED Request Handler with Complete Action Support ---
-async function handleDataExchange(decryptedBody) {
-  const { action, screen, data } = decryptedBody;
-  console.log(`Processing action: ${action} for screen: ${screen}`);
-  console.log('Full decrypted body:', JSON.stringify(decryptedBody, null, 2));
+// --- Session Management (In-Memory Store for Complete Flow) ---
+const flowSessions = new Map(); // In production, use Redis or proper session store
+
+function getFlowSession(flowToken) {
+  if (!flowSessions.has(flowToken)) {
+    flowSessions.set(flowToken, {
+      flowToken,
+      createdAt: Date.now(),
+      data: {}
+    });
+  }
+  return flowSessions.get(flowToken);
+}
+
+function updateFlowSession(flowToken, data) {
+  const session = getFlowSession(flowToken);
+  session.data = { ...session.data, ...data };
+  session.updatedAt = Date.now();
+  return session;
+}
+
+// --- Request Handlers for Complete Screen Flow ---
+async function handleCompleteScreen(decryptedBody) {
+  const { screen, data, flow_token } = decryptedBody;
+  console.log(`=== COMPLETE SCREEN: ${screen} ===`);
+  console.log('Flow token:', flow_token);
+  console.log('Data received:', JSON.stringify(data, null, 2));
+
+  if (!flow_token) {
+    throw new Error('Missing flow_token in request');
+  }
+
+  // Get or create session
+  const session = getFlowSession(flow_token);
+  console.log('Current session data:', JSON.stringify(session.data, null, 2));
+
+  switch (screen) {
+    case 'COLLECT_INFO':
+      return await handleCollectInfoComplete(data, session, decryptedBody);
+    
+    case 'COLLECT_IMAGE_SCENE':
+      return await handleCollectImageSceneComplete(data, session, decryptedBody);
+    
+    case 'SUCCESS_SCREEN':
+      return await handleSuccessScreenComplete(data, session, decryptedBody);
+    
+    default:
+      console.log(`Unknown screen completed: ${screen}`);
+      return { screen: 'COLLECT_INFO', data: {} };
+  }
+}
+
+async function handleCollectInfoComplete(data, session, decryptedBody) {
+  console.log('=== COLLECT_INFO COMPLETED ===');
+  
+  if (!data || typeof data !== 'object') {
+    return {
+      screen: 'COLLECT_INFO',
+      data: { error_message: 'Please fill in the required information.' }
+    };
+  }
+
+  const { product_category } = data;
+  
+  if (!product_category || !product_category.trim()) {
+    return {
+      screen: 'COLLECT_INFO',
+      data: { error_message: 'Product category is required. Please specify what type of product this is.' }
+    };
+  }
+
+  // Update session with collected info
+  updateFlowSession(session.flowToken, { product_category: product_category.trim() });
+  
+  console.log('✅ Product category collected:', product_category.trim());
+  
+  // Move to next screen
+  return {
+    screen: 'COLLECT_IMAGE_SCENE',
+    data: {}
+  };
+}
+
+async function handleCollectImageSceneComplete(data, session, decryptedBody) {
+  console.log('=== COLLECT_IMAGE_SCENE COMPLETED ===');
+  
+  if (!data || typeof data !== 'object') {
+    return {
+      screen: 'COLLECT_IMAGE_SCENE',
+      data: { error_message: 'Please provide the required information.' }
+    };
+  }
+
+  const { product_image, scene_description, price_overlay } = data;
+  
+  // Validate required image
+  if (!product_image) {
+    return {
+      screen: 'COLLECT_IMAGE_SCENE',
+      data: { error_message: 'Product image is required. Please upload an image of your product.' }
+    };
+  }
+
+  // Get product category from session
+  const productCategory = session.data.product_category;
+  if (!productCategory) {
+    console.error('Product category missing from session');
+    return {
+      screen: 'COLLECT_INFO',
+      data: { error_message: 'Session expired. Please start over.' }
+    };
+  }
+
+  // Update session with image and scene data
+  updateFlowSession(session.flowToken, {
+    product_image,
+    scene_description: scene_description?.trim() || null,
+    price_overlay: price_overlay?.trim() || null
+  });
+
+  let actualImageData;
+  try {
+    console.log('=== IMAGE PROCESSING ===');
+    
+    if (Array.isArray(product_image) && product_image.length > 0) {
+      console.log('Processing WhatsApp image array');
+      const firstImage = product_image[0];
+      
+      if (firstImage.encryption_metadata) {
+        console.log('Decrypting WhatsApp encrypted image...');
+        actualImageData = await decryptWhatsAppImage(firstImage);
+      } else if (firstImage.cdn_url) {
+        console.log('Fetching unencrypted image from CDN...');
+        const response = await fetch(firstImage.cdn_url);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image: ${response.status}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        actualImageData = Buffer.from(arrayBuffer).toString('base64');
+      } else {
+        throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
+      }
+    } else if (typeof product_image === 'string') {
+      console.log('Processing direct base64 string...');
+      actualImageData = product_image;
+    } else {
+      throw new Error('Invalid product_image format: expected array or string');
+    }
+    
+    console.log('✅ Image processing successful');
+    
+  } catch (imageError) {
+    console.error('❌ Image processing failed:', imageError);
+    return {
+      screen: 'COLLECT_IMAGE_SCENE',
+      data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
+    };
+  }
+
+  console.log('🚀 Proceeding with image generation...');
+  
+  try {
+    const imageUrl = await generateImageFromAi(
+      actualImageData,
+      productCategory,
+      session.data.scene_description,
+      session.data.price_overlay
+    );
+    
+    console.log('✅ Image generation successful:', imageUrl);
+
+    // Update session with generated image
+    updateFlowSession(session.flowToken, { generated_image_url: imageUrl });
+
+    // Send to user on WhatsApp
+    try {
+      const toPhone = getUserPhoneFromPayload(decryptedBody);
+      if (!toPhone) {
+        console.warn('Phone number not found in payload; skipping WhatsApp send');
+      } else {
+        const caption = session.data.price_overlay 
+          ? `${productCategory} — ${session.data.price_overlay}`
+          : productCategory;
+        const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
+        console.log('✅ WhatsApp image sent:', JSON.stringify(waResp));
+      }
+    } catch (sendErr) {
+      console.error('❌ Failed to send WhatsApp image:', sendErr);
+    }
+
+    return { 
+      screen: 'SUCCESS_SCREEN', 
+      data: { 
+        image_url: imageUrl,
+        product_category: productCategory,
+        scene_description: session.data.scene_description,
+        price_overlay: session.data.price_overlay
+      } 
+    };
+  } catch (e) {
+    console.error('❌ Image generation failed:', e);
+    return {
+      screen: 'COLLECT_IMAGE_SCENE',
+      data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
+    };
+  }
+}
+
+async function handleSuccessScreenComplete(data, session, decryptedBody) {
+  console.log('=== SUCCESS_SCREEN COMPLETED ===');
+  
+  // Flow is complete, could clean up session here
+  // flowSessions.delete(session.flowToken);
+  
+  return {
+    screen: 'SUCCESS_SCREEN',
+    data: { status: 'completed' }
+  };
+}
+
+async function handleFlowCompletion(decryptedBody) {
+  const { action, screen, data, flow_token } = decryptedBody;
+  console.log(`Processing complete_screen action for screen: ${screen}`);
+  console.log('Flow token:', flow_token);
+  console.log('Data received:', JSON.stringify(data, null, 2));
 
   if (action === 'INIT') {
     return { screen: 'COLLECT_INFO', data: {} };
   }
 
-  // Handle COMPLETE action (when flow terminates)
-  if (action === 'complete') {
-    console.log('=== COMPLETE ACTION (FLOW TERMINATED) ===');
-    
-    // For complete action, the data might be in different locations
-    const flowData = data || decryptedBody.flow_data || decryptedBody;
-    console.log('Flow data:', JSON.stringify(flowData, null, 2));
-
-    const { scene_description, price_overlay, product_image, product_category, mobile_number } = flowData;
-
-    console.log('=== FIELD VALIDATION ===');
-    console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
-    console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
-    console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
-    console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
-    console.log('mobile_number:', mobile_number ? `"${mobile_number}"` : 'not provided');
-
-    if (!product_image) {
-      console.error('❌ Product image is missing');
-      // For complete action, we can't return to a screen, so we just process what we can
-      // or send an error message via WhatsApp
-      return { data: { status: 'error', message: 'Product image is required' } };
-    }
-
-    if (!product_category || !product_category.trim()) {
-      console.error('❌ Product category is missing');
-      return { data: { status: 'error', message: 'Product category is required' } };
-    }
-
-    let actualImageData;
-    try {
-      console.log('=== IMAGE PROCESSING ===');
-      
-      if (Array.isArray(product_image) && product_image.length > 0) {
-        console.log('Processing WhatsApp image array');
-        const firstImage = product_image[0];
-        
-        if (firstImage.encryption_metadata) {
-          console.log('Decrypting WhatsApp encrypted image...');
-          actualImageData = await decryptWhatsAppImage(firstImage);
-        } else if (firstImage.cdn_url) {
-          console.log('Fetching unencrypted image from CDN...');
-          const response = await fetch(firstImage.cdn_url);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch image: ${response.status}`);
-          }
-          const arrayBuffer = await response.arrayBuffer();
-          actualImageData = Buffer.from(arrayBuffer).toString('base64');
-        } else {
-          throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
-        }
-      } else if (typeof product_image === 'string') {
-        console.log('Processing direct base64 string...');
-        actualImageData = product_image;
-      } else {
-        throw new Error('Invalid product_image format: expected array or string');
-      }
-      
-      console.log('✅ Image processing successful');
-      
-    } catch (imageError) {
-      console.error('❌ Image processing failed:', imageError);
-      return { data: { status: 'error', message: `Failed to process image: ${imageError.message}` } };
-    }
-
-    console.log('🚀 Proceeding with image generation...');
-    
-    try {
-      const imageUrl = await generateImageFromAi(
-        actualImageData,
-        product_category.trim(),
-        scene_description && scene_description.trim() ? scene_description.trim() : null,
-        price_overlay && price_overlay.trim() ? price_overlay.trim() : null
-      );
-      
-      console.log('✅ Image generation successful:', imageUrl);
-
-      // Send to user on WhatsApp using Supabase public URL
-      try {
-        // Try mobile_number first, then fallback to user phone extraction
-        const toPhone = mobile_number || getUserPhoneFromPayload(decryptedBody);
-        if (!toPhone) {
-          console.warn('Phone number not found in payload; skipping WhatsApp send');
-          return { data: { status: 'success', image_url: imageUrl, warning: 'Generated but could not send - no phone number' } };
-        } else {
-          const caption = (price_overlay && price_overlay.trim())
-            ? `🎨 Your custom product scene is ready! ${product_category.trim()} — ${price_overlay.trim()}`
-            : `🎨 Your custom product scene is ready! ${product_category.trim()}`;
-          
-          const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
-          console.log('✅ WhatsApp image sent:', JSON.stringify(waResp));
-          
-          return { data: { status: 'success', image_url: imageUrl, whatsapp_sent: true } };
-        }
-      } catch (sendErr) {
-        console.error('❌ Failed to send WhatsApp image:', sendErr);
-        return { data: { status: 'success', image_url: imageUrl, warning: 'Generated but failed to send via WhatsApp' } };
-      }
-      
-    } catch (e) {
-      console.error('❌ Image generation failed:', e);
-      return { data: { status: 'error', message: `Image generation failed: ${e.message}` } };
-    }
-  }
-
-  if (action === 'data_exchange') {
-    console.log('=== DATA EXCHANGE ACTION ===');
-
-    if (data && typeof data === 'object') {
-      const { scene_description, price_overlay, product_image, product_category } = data;
-
-      console.log('=== FIELD VALIDATION ===');
-      console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
-      console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
-      console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
-      console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
-
-      if (!product_image) {
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: "Product image is required. Please upload an image of your product." }
-        };
-      }
-
-      if (!product_category || !product_category.trim()) {
-        return {
-          screen: 'COLLECT_INFO',
-          data: { error_message: "Product category is required. Please specify what type of product this is." }
-        };
-      }
-
-      let actualImageData;
-      try {
-        console.log('=== IMAGE PROCESSING ===');
-        
-        if (Array.isArray(product_image) && product_image.length > 0) {
-          console.log('Processing WhatsApp image array');
-          const firstImage = product_image[0];
-          
-          if (firstImage.encryption_metadata) {
-            console.log('Decrypting WhatsApp encrypted image...');
-            actualImageData = await decryptWhatsAppImage(firstImage);
-          } else if (firstImage.cdn_url) {
-            console.log('Fetching unencrypted image from CDN...');
-            const response = await fetch(firstImage.cdn_url);
-            if (!response.ok) {
-              throw new Error(`Failed to fetch image: ${response.status}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
-            actualImageData = Buffer.from(arrayBuffer).toString('base64');
-          } else {
-            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
-          }
-        } else if (typeof product_image === 'string') {
-          console.log('Processing direct base64 string...');
-          actualImageData = product_image;
-        } else {
-          throw new Error('Invalid product_image format: expected array or string');
-        }
-        
-        console.log('✅ Image processing successful');
-        
-      } catch (imageError) {
-        console.error('❌ Image processing failed:', imageError);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
-        };
-      }
-
-      console.log('🚀 Proceeding with image generation...');
-      
-      try {
-        const imageUrl = await generateImageFromAi(
-          actualImageData,
-          product_category.trim(),
-          scene_description && scene_description.trim() ? scene_description.trim() : null,
-          price_overlay && price_overlay.trim() ? price_overlay.trim() : null
-        );
-        
-        console.log('✅ Image generation successful:', imageUrl);
-
-        // Send to user on WhatsApp using Supabase public URL
-        try {
-          const toPhone = getUserPhoneFromPayload(decryptedBody);
-          if (!toPhone) {
-            console.warn('Phone number not found in payload; skipping WhatsApp send');
-          } else {
-            const caption = (price_overlay && price_overlay.trim())
-              ? `${product_category.trim()} — ${price_overlay.trim()}`
-              : product_category.trim();
-            const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
-            console.log('✅ WhatsApp image sent:', JSON.stringify(waResp));
-          }
-        } catch (sendErr) {
-          console.error('❌ Failed to send WhatsApp image:', sendErr);
-        }
-
-        return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
-      } catch (e) {
-        console.error('❌ Image generation failed:', e);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
-        };
-      }
-    } else {
-      return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
-    }
+  if (action === 'complete_screen') {
+    return await handleCompleteScreen(decryptedBody);
   }
 
   if (action === 'BACK') {
     if (screen === 'COLLECT_IMAGE_SCENE') {
       return { screen: 'COLLECT_INFO', data: {} };
+    }
+    if (screen === 'SUCCESS_SCREEN') {
+      return { screen: 'COLLECT_IMAGE_SCENE', data: {} };
     }
     return { screen: 'COLLECT_INFO', data: {} };
   }
@@ -730,7 +746,8 @@ export default async function handler(req, res) {
       } else if (decryptedBody.action === 'error_notification') {
         responsePayload = await handleErrorNotification(decryptedBody);
       } else {
-        responsePayload = await handleDataExchange(decryptedBody);
+        // Handle complete_screen flow instead of data_exchange
+        responsePayload = await handleFlowCompletion(decryptedBody);
       }
 
       const encryptedResponse = await encryptResponse(responsePayload, aesKeyBuffer, initialVectorBuffer);
