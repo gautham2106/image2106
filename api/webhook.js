@@ -112,6 +112,52 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
   }
 }
 
+// ADD THIS MISSING FUNCTION - WhatsApp Image Decryption
+async function decryptWhatsAppImage(imageData) {
+  console.log('=== DECRYPT WHATSAPP IMAGE ===');
+  console.log('Image data:', JSON.stringify(imageData, null, 2));
+  
+  try {
+    const { cdn_url, encryption_metadata } = imageData;
+    const { encryption_key, hmac_key, iv } = encryption_metadata;
+    
+    console.log('Fetching encrypted image from CDN:', cdn_url);
+    
+    // Fetch the encrypted image from WhatsApp CDN
+    const response = await fetch(cdn_url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image from CDN: ${response.status}`);
+    }
+    
+    const encryptedBuffer = await response.arrayBuffer();
+    console.log('Encrypted image size:', encryptedBuffer.byteLength);
+    
+    // Decrypt the image
+    const encryptionKeyBuffer = Buffer.from(encryption_key, 'base64');
+    const ivBuffer = Buffer.from(iv, 'base64');
+    
+    // Using Node.js crypto for AES decryption
+    const decipher = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
+    
+    const encryptedImageBuffer = Buffer.from(encryptedBuffer);
+    const decryptedPart1 = decipher.update(encryptedImageBuffer);
+    const decryptedPart2 = decipher.final();
+    const decryptedBuffer = Buffer.concat([decryptedPart1, decryptedPart2]);
+    
+    console.log('Decrypted image size:', decryptedBuffer.length);
+    
+    // Convert to base64
+    const base64Data = decryptedBuffer.toString('base64');
+    console.log('Base64 conversion successful, length:', base64Data.length);
+    console.log('===============================');
+    
+    return base64Data;
+  } catch (error) {
+    console.error('Error decrypting WhatsApp image:', error);
+    throw new Error(`Image decryption failed: ${error.message}`);
+  }
+}
+
 // Helper function to upload user's reference image to Supabase
 async function uploadReferenceImageToSupabase(base64Data) {
   console.log('=== SUPABASE UPLOAD DEBUG ===');
@@ -862,7 +908,7 @@ async function handleDataExchange(decryptedBody) {
     console.log('Available data keys:', data ? Object.keys(data) : 'No data object');
     console.log('============================');
 
-    // Check if we have the required fields for image generation (only product_image and product_category mandatory)
+    // Check if we have the required fields for image generation
     if (data && typeof data === 'object') {
       const { scene_description, price_overlay, product_image, product_category } = data;
 
@@ -894,7 +940,53 @@ async function handleDataExchange(decryptedBody) {
         };
       }
 
-      // Both required fields are present, determine generation type
+      // Extract and process the image data
+      let actualImageData;
+      try {
+        console.log('=== IMAGE PROCESSING ===');
+        
+        // Check if product_image is an array (WhatsApp format)
+        if (Array.isArray(product_image) && product_image.length > 0) {
+          console.log('Processing WhatsApp image array, count:', product_image.length);
+          const firstImage = product_image[0];
+          
+          // Check if it has encryption metadata (encrypted WhatsApp image)
+          if (firstImage.encryption_metadata) {
+            console.log('Decrypting WhatsApp encrypted image...');
+            actualImageData = await decryptWhatsAppImage(firstImage);
+          } else if (firstImage.cdn_url) {
+            console.log('Fetching unencrypted image from CDN...');
+            const response = await fetch(firstImage.cdn_url);
+            if (!response.ok) {
+              throw new Error(`Failed to fetch image: ${response.status}`);
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            actualImageData = Buffer.from(arrayBuffer).toString('base64');
+          } else {
+            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
+          }
+        } else if (typeof product_image === 'string') {
+          console.log('Processing direct base64 string...');
+          // Direct base64 string
+          actualImageData = product_image;
+        } else {
+          throw new Error('Invalid product_image format: expected array or string');
+        }
+        
+        console.log('✅ Image processing successful, data length:', actualImageData.length);
+        console.log('========================');
+        
+      } catch (imageError) {
+        console.error('❌ Image processing failed:', imageError);
+        return {
+          screen: 'COLLECT_IMAGE_SCENE',
+          data: {
+            error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.`
+          }
+        };
+      }
+
+      // Determine generation type
       let generationType = "";
       if (scene_description && scene_description.trim() && price_overlay && price_overlay.trim()) {
         generationType = "Full featured image (Category + Scene + Price)";
@@ -914,7 +1006,7 @@ async function handleDataExchange(decryptedBody) {
       
       try {
         const imageUrl = await generateImageFromAi(
-          actualImageData,  // Use the detected image data
+          actualImageData,  // Now properly defined and processed
           product_category.trim(),
           scene_description && scene_description.trim() ? scene_description.trim() : null,
           price_overlay && price_overlay.trim() ? price_overlay.trim() : null
