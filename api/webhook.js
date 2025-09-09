@@ -17,7 +17,8 @@ function validateEnvironmentVars() {
     'VERIFY_TOKEN',
     'SUPABASE_URL',
     'SUPABASE_ANON_KEY',
-    'GEMINI_API_KEY'
+    'GEMINI_API_KEY',
+    'WHATSAPP_ACCESS_TOKEN'
   ];
   const missing = requiredVars.filter((varName) => !process.env[varName]);
   if (missing.length > 0) {
@@ -112,138 +113,137 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
   }
 }
 
-// WhatsApp Image Decryption with multiple fallback strategies
-async function decryptWhatsAppImage(imageData) {
-  console.log('=== DECRYPT WHATSAPP IMAGE ===');
-  console.log('Image data:', JSON.stringify(imageData, null, 2));
+// WhatsApp API Media Download - replaces encryption/decryption
+async function downloadWhatsAppMedia(mediaId) {
+  console.log('=== WHATSAPP API MEDIA DOWNLOAD ===');
+  console.log('Media ID:', mediaId);
+  
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!accessToken) {
+    throw new Error('WHATSAPP_ACCESS_TOKEN environment variable is required');
+  }
   
   try {
-    const { cdn_url, encryption_metadata } = imageData;
-    const { encryption_key, hmac_key, iv } = encryption_metadata;
+    // Step 1: Get media information (URL, mime type, etc.)
+    console.log('Step 1: Fetching media info from WhatsApp API...');
+    const mediaInfoUrl = `https://graph.facebook.com/v18.0/${mediaId}`;
     
-    console.log('Fetching encrypted image from CDN:', cdn_url);
-    
-    // Fetch the encrypted image from WhatsApp CDN
-    const response = await fetch(cdn_url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image from CDN: ${response.status}`);
-    }
-    
-    const encryptedArrayBuffer = await response.arrayBuffer();
-    console.log('Encrypted image size:', encryptedArrayBuffer.byteLength);
-    
-    const encryptedBuffer = Buffer.from(encryptedArrayBuffer);
-    const encryptionKeyBuffer = Buffer.from(encryption_key, 'base64');
-    const ivBuffer = Buffer.from(iv, 'base64');
-    
-    console.log('Trying multiple decryption strategies...');
-    
-    // Strategy 1: Try direct decryption (no HMAC separation)
-    try {
-      console.log('Strategy 1: Direct decryption without HMAC separation');
-      const decipher1 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher1.setAutoPadding(true);
-      
-      const decrypted1 = Buffer.concat([
-        decipher1.update(encryptedBuffer),
-        decipher1.final()
-      ]);
-      
-      console.log('Strategy 1 successful! Decrypted size:', decrypted1.length);
-      return decrypted1.toString('base64');
-    } catch (error1) {
-      console.log('Strategy 1 failed:', error1.message);
-    }
-    
-    // Strategy 2: Remove HMAC (last 32 bytes) then decrypt
-    try {
-      console.log('Strategy 2: Remove HMAC (32 bytes) then decrypt');
-      const mediaData = encryptedBuffer.slice(0, -32);
-      const decipher2 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher2.setAutoPadding(true);
-      
-      const decrypted2 = Buffer.concat([
-        decipher2.update(mediaData),
-        decipher2.final()
-      ]);
-      
-      console.log('Strategy 2 successful! Decrypted size:', decrypted2.length);
-      return decrypted2.toString('base64');
-    } catch (error2) {
-      console.log('Strategy 2 failed:', error2.message);
-    }
-    
-    // Strategy 3: Manual padding with direct decryption
-    try {
-      console.log('Strategy 3: Manual padding handling (no HMAC)');
-      const decipher3 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher3.setAutoPadding(false);
-      
-      const decryptedWithPadding = Buffer.concat([
-        decipher3.update(encryptedBuffer),
-        decipher3.final()
-      ]);
-      
-      // Remove PKCS7 padding manually
-      const paddingLength = decryptedWithPadding[decryptedWithPadding.length - 1];
-      const decrypted3 = paddingLength > 0 && paddingLength <= 16 
-        ? decryptedWithPadding.slice(0, -paddingLength)
-        : decryptedWithPadding;
-      
-      console.log('Strategy 3 successful! Decrypted size:', decrypted3.length);
-      return decrypted3.toString('base64');
-    } catch (error3) {
-      console.log('Strategy 3 failed:', error3.message);
-    }
-    
-    // Strategy 4: Manual padding with HMAC removal
-    try {
-      console.log('Strategy 4: Manual padding with HMAC removal');
-      const mediaData = encryptedBuffer.slice(0, -32);
-      const decipher4 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher4.setAutoPadding(false);
-      
-      const decryptedWithPadding = Buffer.concat([
-        decipher4.update(mediaData),
-        decipher4.final()
-      ]);
-      
-      const paddingLength = decryptedWithPadding[decryptedWithPadding.length - 1];
-      const decrypted4 = paddingLength > 0 && paddingLength <= 16 
-        ? decryptedWithPadding.slice(0, -paddingLength)
-        : decryptedWithPadding;
-      
-      console.log('Strategy 4 successful! Decrypted size:', decrypted4.length);
-      return decrypted4.toString('base64');
-    } catch (error4) {
-      console.log('Strategy 4 failed:', error4.message);
-    }
-    
-    // Strategy 5: Try with different HMAC sizes
-    for (const hmacSize of [0, 16, 20, 32, 64]) {
-      try {
-        console.log(`Strategy 5.${hmacSize}: HMAC size ${hmacSize} bytes`);
-        const mediaData = hmacSize > 0 ? encryptedBuffer.slice(0, -hmacSize) : encryptedBuffer;
-        const decipher5 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-        decipher5.setAutoPadding(true);
-        
-        const decrypted5 = Buffer.concat([
-          decipher5.update(mediaData),
-          decipher5.final()
-        ]);
-        
-        console.log(`Strategy 5.${hmacSize} successful! Decrypted size:`, decrypted5.length);
-        return decrypted5.toString('base64');
-      } catch (error5) {
-        console.log(`Strategy 5.${hmacSize} failed:`, error5.message);
+    const mediaInfoResponse = await fetch(mediaInfoUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
       }
-    }
+    });
+
+    console.log('Media info response status:', mediaInfoResponse.status);
     
-    throw new Error('All decryption strategies failed');
+    if (!mediaInfoResponse.ok) {
+      const errorText = await mediaInfoResponse.text();
+      console.error('Media info error:', errorText);
+      throw new Error(`Failed to get media info: ${mediaInfoResponse.status} - ${errorText}`);
+    }
+
+    const mediaInfo = await mediaInfoResponse.json();
+    console.log('Media info retrieved:', {
+      url: mediaInfo.url ? 'present' : 'missing',
+      mime_type: mediaInfo.mime_type,
+      file_size: mediaInfo.file_size
+    });
+
+    if (!mediaInfo.url) {
+      throw new Error('No media URL found in WhatsApp API response');
+    }
+
+    // Step 2: Download the actual media file using the provided URL
+    console.log('Step 2: Downloading media file...');
+    const mediaDownloadResponse = await fetch(mediaInfo.url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'User-Agent': 'WhatsApp-Business-API-Client'
+      }
+    });
+
+    console.log('Media download response status:', mediaDownloadResponse.status);
+    
+    if (!mediaDownloadResponse.ok) {
+      const errorText = await mediaDownloadResponse.text();
+      console.error('Media download error:', errorText);
+      throw new Error(`Failed to download media: ${mediaDownloadResponse.status} - ${errorText}`);
+    }
+
+    // Step 3: Convert to base64
+    console.log('Step 3: Converting to base64...');
+    const arrayBuffer = await mediaDownloadResponse.arrayBuffer();
+    const base64Data = Buffer.from(arrayBuffer).toString('base64');
+    
+    console.log('Media download successful!');
+    console.log('- File size:', arrayBuffer.byteLength, 'bytes');
+    console.log('- Base64 length:', base64Data.length);
+    console.log('- MIME type:', mediaInfo.mime_type);
+    console.log('====================================');
+    
+    return base64Data;
     
   } catch (error) {
-    console.error('Error decrypting WhatsApp image:', error);
-    throw new Error(`Image decryption failed: ${error.message}`);
+    console.error('WhatsApp API media download failed:', error);
+    throw new Error(`WhatsApp media download failed: ${error.message}`);
+  }
+}
+
+// Process WhatsApp Image using API (no encryption handling)
+async function processWhatsAppImage(product_image) {
+  console.log('=== PROCESSING WHATSAPP IMAGE ===');
+  console.log('Product image type:', Array.isArray(product_image) ? 'array' : typeof product_image);
+  
+  let actualImageData;
+  
+  try {
+    if (Array.isArray(product_image) && product_image.length > 0) {
+      console.log('Processing WhatsApp image array, count:', product_image.length);
+      const firstImage = product_image[0];
+      console.log('First image structure:', Object.keys(firstImage));
+      
+      // Check for media_id (preferred method with WhatsApp API)
+      if (firstImage.media_id) {
+        console.log('Using WhatsApp API for media download with media_id:', firstImage.media_id);
+        actualImageData = await downloadWhatsAppMedia(firstImage.media_id);
+      }
+      // Fallback: try CDN URL if no media_id (less common)
+      else if (firstImage.cdn_url && !firstImage.encryption_metadata) {
+        console.log('Trying direct CDN download (unencrypted)...');
+        const response = await fetch(firstImage.cdn_url);
+        if (!response.ok) {
+          throw new Error(`CDN download failed: ${response.status}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        actualImageData = Buffer.from(arrayBuffer).toString('base64');
+      }
+      // Error: encrypted CDN (our previous problem)
+      else if (firstImage.cdn_url && firstImage.encryption_metadata) {
+        throw new Error('Image is encrypted. Use media_id with WhatsApp API instead of CDN URL.');
+      }
+      else {
+        throw new Error('Invalid image format: no media_id or usable cdn_url found');
+      }
+    } 
+    else if (typeof product_image === 'string') {
+      console.log('Processing direct base64 string...');
+      actualImageData = product_image;
+    } 
+    else {
+      throw new Error('Invalid product_image format: expected array or string');
+    }
+    
+    console.log('Image processing successful, data length:', actualImageData ? actualImageData.length : 0);
+    console.log('=================================');
+    
+    return actualImageData;
+    
+  } catch (error) {
+    console.error('Image processing failed:', error);
+    throw new Error(`Failed to process image: ${error.message}`);
   }
 }
 
@@ -263,31 +263,31 @@ async function uploadReferenceImageToSupabase(base64Data) {
   try {
     // Validate input
     if (!base64Data || typeof base64Data !== 'string') {
-      console.log('❌ SUPABASE ERROR: Invalid base64 data provided');
+      console.log('SUPABASE ERROR: Invalid base64 data provided');
       throw new Error('Invalid base64 data provided');
     }
 
     // Clean the base64 data - remove data URL prefix if present
     let cleanBase64 = base64Data;
     if (base64Data.startsWith && base64Data.startsWith('data:')) {
-      console.log('🔧 Removing data URL prefix...');
+      console.log('Removing data URL prefix...');
       const base64Index = base64Data.indexOf(',');
       if (base64Index !== -1) {
         cleanBase64 = base64Data.substring(base64Index + 1);
-        console.log('✅ Data URL prefix removed, new length:', cleanBase64.length);
+        console.log('Data URL prefix removed, new length:', cleanBase64.length);
       }
     }
 
-    console.log('📦 Converting base64 to buffer...');
+    console.log('Converting base64 to buffer...');
     // Convert base64 to buffer
     const buffer = Buffer.from(cleanBase64, 'base64');
-    console.log('✅ Buffer created, size:', buffer.length, 'bytes');
+    console.log('Buffer created, size:', buffer.length, 'bytes');
     
     // Generate unique filename for reference image
     const filename = `reference-${Date.now()}.jpg`;
-    console.log('📁 Generated filename:', filename);
+    console.log('Generated filename:', filename);
     
-    console.log('☁️ Uploading to Supabase storage...');
+    console.log('Uploading to Supabase storage...');
     // Upload to reference-photos bucket
     const { data, error } = await supabase.storage
       .from('reference-photos')
@@ -297,21 +297,21 @@ async function uploadReferenceImageToSupabase(base64Data) {
       });
 
     if (error) {
-      console.error('❌ Supabase reference upload error:', error);
+      console.error('Supabase reference upload error:', error);
       throw new Error(`Reference upload failed: ${error.message}`);
     }
 
-    console.log('✅ Upload successful, getting public URL...');
+    console.log('Upload successful, getting public URL...');
     // Get public URL
     const { data: publicUrlData } = supabase.storage
       .from('reference-photos')
       .getPublicUrl(filename);
 
-    console.log('✅ Reference image uploaded:', publicUrlData.publicUrl);
+    console.log('Reference image uploaded:', publicUrlData.publicUrl);
     console.log('============================');
     return publicUrlData.publicUrl;
   } catch (error) {
-    console.error('❌ Error uploading reference image to Supabase:', error);
+    console.error('Error uploading reference image to Supabase:', error);
     console.log('============================');
     throw error;
   }
@@ -354,22 +354,6 @@ async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
     return publicUrlData.publicUrl;
   } catch (error) {
     console.error('Error uploading generated image to Supabase:', error);
-    throw error;
-  }
-}
-
-// Helper function to fetch image from URL and convert to base64
-async function getImageAsBase64FromUrl(imageUrl) {
-  try {
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image: ${response.status}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    return buffer.toString('base64');
-  } catch (error) {
-    console.error('Error fetching image from URL:', error);
     throw error;
   }
 }
@@ -840,9 +824,9 @@ Generate a masterpiece-quality commercial product image that combines the upload
   return advancedPrompt;
 }
 
-// Simplified Gemini API call - hybrid approach (advanced prompting + direct image passing)
+// Simplified Gemini API call with advanced prompting
 async function generateImageFromAi(productImageBase64, productCategory, sceneDescription = null, priceOverlay = null) {
-  console.log('=== SIMPLIFIED GENERATE IMAGE FROM AI ===');
+  console.log('=== GENERATE IMAGE FROM AI ===');
   console.log('Parameters received:');
   console.log('- productImageBase64 length:', productImageBase64 ? productImageBase64.length : 0);
   console.log('- productCategory:', productCategory || 'MISSING');
@@ -865,39 +849,39 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 
   console.log("Step 1: Cleaning base64 data...");
   
-  // Clean the base64 data - remove data URL prefix if present (DIRECT - no Supabase roundtrip)
+  // Clean the base64 data - remove data URL prefix if present
   let cleanBase64 = productImageBase64;
   if (productImageBase64.startsWith('data:')) {
     const base64Index = productImageBase64.indexOf(',');
     if (base64Index !== -1) {
       cleanBase64 = productImageBase64.substring(base64Index + 1);
-      console.log("✅ Data URL prefix removed, new length:", cleanBase64.length);
+      console.log("Data URL prefix removed, new length:", cleanBase64.length);
     }
   }
 
   console.log("Step 2: Creating advanced category-specific prompt...");
   
-  // Create enhanced prompt (keep the advanced prompting)
+  // Create enhanced prompt
   const enhancedPrompt = createAdvancedAdaptivePrompt(productCategory, sceneDescription, priceOverlay, "user-uploaded-image");
-  console.log("✅ Enhanced prompt created for category:", productCategory);
+  console.log("Enhanced prompt created for category:", productCategory);
 
-  console.log("Step 3: Sending DIRECTLY to Gemini API (no Supabase roundtrip)...");
+  console.log("Step 3: Sending to Gemini API...");
 
   // Use the Gemini REST API endpoint for image generation
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
 
-  // Build request body (DIRECT base64 to Gemini - no upload/download)
+  // Build request body
   const requestBody = {
     contents: [
       {
         parts: [
           {
-            text: simplePrompt  // Simple prompt instead of complex one
+            text: enhancedPrompt
           },
           {
             inlineData: {
               mimeType: "image/jpeg",
-              data: cleanBase64  // DIRECT base64, no Supabase roundtrip
+              data: cleanBase64
             }
           }
         ]
@@ -929,7 +913,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
     }
 
     const responseData = await response.json();
-    console.log("✅ Gemini API response received");
+    console.log("Gemini API response received");
 
     const candidate = responseData?.candidates?.[0];
     if (!candidate?.content?.parts) {
@@ -943,20 +927,20 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
       if (part.inlineData) {
         const generatedMimeType = part.inlineData.mimeType;
         const generatedBase64 = part.inlineData.data;
-        console.log("✅ Image generated successfully");
+        console.log("Image generated successfully");
         
-        console.log("Step 5: Uploading ONLY generated image to Supabase...");
+        console.log("Step 5: Uploading generated image to Supabase...");
         
-        // Upload ONLY generated image to Supabase (for WhatsApp display compatibility)
+        // Upload generated image to Supabase for WhatsApp display
         try {
           const publicUrl = await uploadGeneratedImageToSupabase(generatedBase64, generatedMimeType);
-          console.log("✅ Generated image uploaded to Supabase:", publicUrl);
+          console.log("Generated image uploaded to Supabase:", publicUrl);
           console.log("Step 6: Returning public URL to WhatsApp Flow...");
           return publicUrl;
         } catch (uploadError) {
           console.error("Failed to upload generated image:", uploadError);
           // Fallback: return base64 data URL
-          console.log("⚠️ Fallback: returning base64 data URL");
+          console.log("Fallback: returning base64 data URL");
           return `data:${generatedMimeType};base64,${generatedBase64}`;
         }
       }
@@ -970,7 +954,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 
     throw new Error("No image data found in Gemini API response");
   } catch (error) {
-    console.error('❌ Error in generateImageFromAi:', error);
+    console.error('Error in generateImageFromAi:', error);
     throw error;
   }
 }
@@ -1010,7 +994,7 @@ async function handleDataExchange(decryptedBody) {
 
       // Validate only mandatory fields: product_image and product_category
       if (!product_image) {
-        console.log('❌ ERROR: Missing product_image');
+        console.log('ERROR: Missing product_image');
         return {
           screen: 'COLLECT_IMAGE_SCENE',
           data: {
@@ -1020,7 +1004,7 @@ async function handleDataExchange(decryptedBody) {
       }
 
       if (!product_category || !product_category.trim()) {
-        console.log('❌ ERROR: Missing product_category');
+        console.log('ERROR: Missing product_category');
         return {
           screen: 'COLLECT_INFO',
           data: {
@@ -1029,44 +1013,12 @@ async function handleDataExchange(decryptedBody) {
         };
       }
 
-      // Extract and process the image data
+      // Extract and process the image data using WhatsApp API
       let actualImageData;
       try {
-        console.log('=== IMAGE PROCESSING ===');
-        
-        // Check if product_image is an array (WhatsApp format)
-        if (Array.isArray(product_image) && product_image.length > 0) {
-          console.log('Processing WhatsApp image array, count:', product_image.length);
-          const firstImage = product_image[0];
-          
-          // Check if it has encryption metadata (encrypted WhatsApp image)
-          if (firstImage.encryption_metadata) {
-            console.log('Decrypting WhatsApp encrypted image...');
-            actualImageData = await decryptWhatsAppImage(firstImage);
-          } else if (firstImage.cdn_url) {
-            console.log('Fetching unencrypted image from CDN...');
-            const response = await fetch(firstImage.cdn_url);
-            if (!response.ok) {
-              throw new Error(`Failed to fetch image: ${response.status}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
-            actualImageData = Buffer.from(arrayBuffer).toString('base64');
-          } else {
-            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
-          }
-        } else if (typeof product_image === 'string') {
-          console.log('Processing direct base64 string...');
-          // Direct base64 string
-          actualImageData = product_image;
-        } else {
-          throw new Error('Invalid product_image format: expected array or string');
-        }
-        
-        console.log('✅ Image processing successful, data length:', actualImageData.length);
-        console.log('========================');
-        
+        actualImageData = await processWhatsAppImage(product_image);
       } catch (imageError) {
-        console.error('❌ Image processing failed:', imageError);
+        console.error('Image processing failed:', imageError);
         return {
           screen: 'COLLECT_IMAGE_SCENE',
           data: {
@@ -1087,22 +1039,22 @@ async function handleDataExchange(decryptedBody) {
         generationType = "Clean product shot (Category only)";
       }
 
-      console.log('✅ All required fields present. Generation type:', generationType);
-      console.log(`📱 Product Category: "${product_category}"`);
-      console.log(`🖼️ Scene Description: ${scene_description && scene_description.trim() ? `"${scene_description}"` : 'Not provided - will use advanced studio setup'}`);
-      console.log(`💰 Price Overlay: ${price_overlay && price_overlay.trim() ? `"${price_overlay}"` : 'Not provided - will focus on pure product appeal'}`);
-      console.log('🚀 Proceeding with advanced AI generation...');
+      console.log('All required fields present. Generation type:', generationType);
+      console.log(`Product Category: "${product_category}"`);
+      console.log(`Scene Description: ${scene_description && scene_description.trim() ? `"${scene_description}"` : 'Not provided - will use advanced studio setup'}`);
+      console.log(`Price Overlay: ${price_overlay && price_overlay.trim() ? `"${price_overlay}"` : 'Not provided - will focus on pure product appeal'}`);
+      console.log('Proceeding with advanced AI generation...');
       
       try {
         const imageUrl = await generateImageFromAi(
-          actualImageData,  // Now properly defined and processed
+          actualImageData,
           product_category.trim(),
           scene_description && scene_description.trim() ? scene_description.trim() : null,
           price_overlay && price_overlay.trim() ? price_overlay.trim() : null
         );
         
-        console.log('✅ Advanced image generation successful:', imageUrl);
-        console.log(`🎯 Generated: ${generationType}`);
+        console.log('Advanced image generation successful:', imageUrl);
+        console.log(`Generated: ${generationType}`);
         return {
           screen: 'SUCCESS_SCREEN',
           data: {
@@ -1110,7 +1062,7 @@ async function handleDataExchange(decryptedBody) {
           }
         };
       } catch (e) {
-        console.error('❌ Advanced image generation failed:', e);
+        console.error('Advanced image generation failed:', e);
         return {
           screen: 'COLLECT_IMAGE_SCENE',
           data: {
