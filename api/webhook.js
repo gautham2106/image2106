@@ -2,6 +2,7 @@
 // Place this file at: api/webhook.js
 
 import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 // --- CORS Headers ---
 const corsHeaders = {
@@ -16,8 +17,10 @@ function validateEnvironmentVars() {
     'PRIVATE_KEY',
     'VERIFY_TOKEN',
     'SUPABASE_URL',
-    'SUPABASE_ANON_KEY',
-    'GEMINI_API_KEY'
+    'GEMINI_API_KEY',
+    'SUPABASE_S3_ENDPOINT',
+    'SUPABASE_S3_ACCESS_KEY_ID',
+    'SUPABASE_S3_SECRET_ACCESS_KEY'
   ];
   const missing = requiredVars.filter((varName) => !process.env[varName]);
   if (missing.length > 0) {
@@ -111,7 +114,7 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
   }
 }
 
-// WhatsApp Image Decryption (CBC + HMAC trailer 10 bytes, verify with iv+ciphertext)
+// WhatsApp Image Decryption (CBC + HMAC 10-byte trailer, HMAC over iv|ciphertext)
 async function decryptWhatsAppImage(imageData) {
   console.log('=== DECRYPT WHATSAPP IMAGE (CBC+HMAC-10) ===');
   console.log('Image data:', JSON.stringify(imageData, null, 2));
@@ -145,7 +148,6 @@ async function decryptWhatsAppImage(imageData) {
       throw new Error('Encrypted payload too small');
     }
 
-    // Verify the provided SHA256 of the encrypted payload if present
     if (encrypted_hash) {
       const encSha = createHash('sha256').update(encBuf).digest('base64');
       console.log('Encrypted SHA256 (computed vs provided):', encSha, encrypted_hash);
@@ -154,11 +156,11 @@ async function decryptWhatsAppImage(imageData) {
       }
     }
 
-    // Split ciphertext and appended MAC (10 bytes trailer per WA media convention)
+    // Split ciphertext and appended MAC (last 10 bytes)
     const macTrailer = encBuf.subarray(encBuf.length - 10);
     const cipherText = encBuf.subarray(0, encBuf.length - 10);
 
-    // HMAC-SHA256(iv || ciphertext), compare first 10 bytes to trailer
+    // HMAC-SHA256(iv || ciphertext), compare first 10 bytes
     const macFull = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
     const mac10 = macFull.subarray(0, 10);
 
@@ -166,7 +168,6 @@ async function decryptWhatsAppImage(imageData) {
       throw new Error('HMAC verification failed');
     }
 
-    // Ciphertext length must be multiple of 16 for CBC
     if (cipherText.length % 16 !== 0) {
       throw new Error(`Ciphertext length not a multiple of 16: ${cipherText.length}`);
     }
@@ -181,7 +182,6 @@ async function decryptWhatsAppImage(imageData) {
       throw new Error(`AES decryption failed: ${e.message}`);
     }
 
-    // Optional validation of plaintext hash if provided
     if (plaintext_hash) {
       const plainSha = createHash('sha256').update(decrypted).digest('base64');
       if (plainSha !== plaintext_hash) {
@@ -199,40 +199,41 @@ async function decryptWhatsAppImage(imageData) {
   }
 }
 
-// Helper function to upload generated image to Supabase
+// Upload to Supabase Storage via S3-compatible API (SigV4)
 async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
-  const { createClient } = await import('@supabase/supabase-js');
-  const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-  );
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const s3Endpoint = process.env.SUPABASE_S3_ENDPOINT; // e.g. https://<ref>.storage.supabase.co/storage/v1/s3
+  const s3Region = process.env.SUPABASE_S3_REGION || 'us-east-1';
+  const accessKeyId = process.env.SUPABASE_S3_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.SUPABASE_S3_SECRET_ACCESS_KEY;
+  const bucket = process.env.SUPABASE_S3_BUCKET || 'generated-images';
 
-  try {
-    const buffer = Buffer.from(base64Data, 'base64');
-    const filename = `generated-${Date.now()}.${mimeType.split('/')[1]}`;
-    
-    const { data, error } = await supabase.storage
-      .from('generated-images')
-      .upload(filename, buffer, {
-        contentType: mimeType,
-        upsert: false
-      });
-
-    if (error) {
-      console.error('Supabase generated upload error:', error);
-      throw new Error(`Generated upload failed: ${error.message}`);
-    }
-
-    const { data: publicUrlData } = supabase.storage
-      .from('generated-images')
-      .getPublicUrl(filename);
-
-    console.log('Generated image uploaded:', publicUrlData.publicUrl);
-    return publicUrlData.publicUrl;
-  } catch (error) {
-    console.error('Error uploading generated image to Supabase:', error);
-    throw error;
+  if (!supabaseUrl || !s3Endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error('Missing SUPABASE_URL, SUPABASE_S3_ENDPOINT, or S3 credentials');
   }
+
+  const buffer = Buffer.from(base64Data, 'base64');
+  const ext = (mimeType && mimeType.split('/')[1]) || 'jpg';
+  const filename = `generated-${Date.now()}.${ext}`;
+
+  const s3 = new S3Client({
+    region: s3Region,
+    endpoint: s3Endpoint,
+    credentials: { accessKeyId, secretAccessKey },
+    forcePathStyle: true
+  });
+
+  await s3.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: filename,
+    Body: buffer,
+    ContentType: mimeType || 'image/jpeg'
+  }));
+
+  const baseUrl = supabaseUrl.replace(/\/+$/, '');
+  const publicUrl = `${baseUrl}/storage/v1/object/public/${encodeURIComponent(bucket)}/${encodeURIComponent(filename)}`;
+  console.log('Generated image uploaded (S3):', publicUrl);
+  return publicUrl;
 }
 
 // Simple prompt creation function
@@ -349,7 +350,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
         const generatedBase64 = part.inlineData.data;
         console.log("✅ Image generated successfully");
         
-        console.log("Step 5: Uploading generated image to Supabase...");
+        console.log("Step 5: Uploading generated image to Supabase (S3)...");
         try {
           const publicUrl = await uploadGeneratedImageToSupabase(generatedBase64, generatedMimeType);
           console.log("✅ Generated image uploaded to Supabase:", publicUrl);
