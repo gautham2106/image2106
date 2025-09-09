@@ -461,17 +461,11 @@ async function sendWhatsAppTextMessage(toE164, message) {
   return data;
 }
 
-// ASYNC BACKGROUND PROCESSING FUNCTION - NOW INCLUDES IMAGE PROCESSING
+// ASYNC BACKGROUND PROCESSING FUNCTION - ULTRA SIMPLIFIED (ONLY FINAL IMAGE)
 async function processImageGenerationAsync(productImage, productCategory, sceneDescription, priceOverlay, userPhone) {
   console.log('🚀 Starting async image generation...');
   
   try {
-    // Send "processing" message to user
-    if (userPhone) {
-      await sendWhatsAppTextMessage(userPhone, 
-        "🎨 Creating your amazing product scene... This may take a few moments!");
-    }
-
     // Process image data asynchronously
     console.log('=== ASYNC IMAGE PROCESSING ===');
     let actualImageData;
@@ -483,6 +477,7 @@ async function processImageGenerationAsync(productImage, productCategory, sceneD
       if (firstImage.encryption_metadata) {
         console.log('Decrypting WhatsApp encrypted image...');
         actualImageData = await decryptWhatsAppImage(firstImage);
+        console.log('✅ Image decryption completed');
       } else if (firstImage.cdn_url) {
         console.log('Fetching unencrypted image from CDN...');
         const response = await fetch(firstImage.cdn_url);
@@ -491,6 +486,7 @@ async function processImageGenerationAsync(productImage, productCategory, sceneD
         }
         const arrayBuffer = await response.arrayBuffer();
         actualImageData = Buffer.from(arrayBuffer).toString('base64');
+        console.log('✅ Image fetch completed');
       } else {
         throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
       }
@@ -503,6 +499,7 @@ async function processImageGenerationAsync(productImage, productCategory, sceneD
     
     console.log('✅ Async image processing successful');
 
+    console.log('🤖 Starting AI image generation...');
     const imageUrl = await generateImageFromAi(
       actualImageData,
       productCategory.trim(),
@@ -512,8 +509,9 @@ async function processImageGenerationAsync(productImage, productCategory, sceneD
     
     console.log('✅ Async image generation successful:', imageUrl);
 
-    // Send generated image to user
+    // Send ONLY the final generated image to user
     if (userPhone) {
+      console.log('📱 Sending generated image to user:', userPhone);
       const caption = (priceOverlay && priceOverlay.trim())
         ? `🎉 Here's your ${productCategory.trim()} — ${priceOverlay.trim()}`
         : `🎉 Here's your ${productCategory.trim()}!`;
@@ -524,12 +522,7 @@ async function processImageGenerationAsync(productImage, productCategory, sceneD
 
   } catch (error) {
     console.error('❌ Async image generation failed:', error);
-    
-    // Send error message to user
-    if (userPhone) {
-      await sendWhatsAppTextMessage(userPhone, 
-        "😞 Sorry, there was an issue generating your image. Please try again later or contact support.");
-    }
+    // No error message sent to user - silent failure
   }
 }
 
