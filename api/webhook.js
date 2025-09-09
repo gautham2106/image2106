@@ -924,7 +924,7 @@ async function handleDataExchange(decryptedBody) {
       
       try {
         const imageUrl = await generateImageFromAi(
-          product_image, 
+          actualImageData,  // Use the detected image data
           product_category.trim(),
           scene_description && scene_description.trim() ? scene_description.trim() : null,
           price_overlay && price_overlay.trim() ? price_overlay.trim() : null
