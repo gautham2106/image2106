@@ -140,10 +140,18 @@ async function decryptWhatsAppImage(imageData) {
     if (ivBuf.length !== 16) throw new Error('Invalid iv length');
 
     console.log('Fetching encrypted image from CDN:', cdn_url);
-    const response = await fetch(cdn_url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image from CDN: ${response.status}`);
-    }
+
+// Add timeout to prevent hanging
+const fetchPromise = fetch(cdn_url);
+const timeoutPromise = new Promise((_, reject) => 
+  setTimeout(() => reject(new Error('CDN fetch timeout after 30 seconds')), 30000)
+);
+
+const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+if (!response.ok) {
+  throw new Error(`Failed to fetch image from CDN: ${response.status}`);
+}
 
     const encBuf = Buffer.from(await response.arrayBuffer());
     console.log('Encrypted image size:', encBuf.byteLength);
