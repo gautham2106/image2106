@@ -1,7 +1,7 @@
 // Vercel Node.js API Route for WhatsApp Flow with Gemini API
 // Place this file at: api/webhook.js
 
-import { createHash, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
+import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
 
 // --- CORS Headers ---
 const corsHeaders = {
@@ -111,133 +111,86 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
   }
 }
 
-// WhatsApp Image Decryption with multiple fallback strategies
+// WhatsApp Image Decryption with authentication and deterministic flow
 async function decryptWhatsAppImage(imageData) {
-  console.log('=== DECRYPT WHATSAPP IMAGE ===');
+  console.log('=== DECRYPT WHATSAPP IMAGE (deterministic) ===');
   console.log('Image data:', JSON.stringify(imageData, null, 2));
-  
+
   try {
     const { cdn_url, encryption_metadata } = imageData;
-    const { encryption_key, hmac_key, iv } = encryption_metadata;
-    
+    if (!cdn_url || !encryption_metadata) {
+      throw new Error('Missing cdn_url or encryption_metadata');
+    }
+
+    const { encryption_key, hmac_key, iv, encrypted_hash, plaintext_hash } = encryption_metadata;
+
+    const keyBuf = Buffer.from(encryption_key, 'base64');
+    const macKeyBuf = Buffer.from(hmac_key, 'base64');
+    const ivBuf = Buffer.from(iv, 'base64');
+
+    if (keyBuf.length !== 32) throw new Error('Invalid encryption_key length');
+    if (macKeyBuf.length !== 32) throw new Error('Invalid hmac_key length');
+    if (ivBuf.length !== 16) throw new Error('Invalid iv length');
+
     console.log('Fetching encrypted image from CDN:', cdn_url);
-    
     const response = await fetch(cdn_url);
     if (!response.ok) {
       throw new Error(`Failed to fetch image from CDN: ${response.status}`);
     }
-    
-    const encryptedArrayBuffer = await response.arrayBuffer();
-    console.log('Encrypted image size:', encryptedArrayBuffer.byteLength);
-    
-    const encryptedBuffer = Buffer.from(encryptedArrayBuffer);
-    const encryptionKeyBuffer = Buffer.from(encryption_key, 'base64');
-    const ivBuffer = Buffer.from(iv, 'base64');
-    
-    console.log('Trying multiple decryption strategies...');
-    
-    // Strategy 1: Try direct decryption (no HMAC separation)
-    try {
-      console.log('Strategy 1: Direct decryption without HMAC separation');
-      const decipher1 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher1.setAutoPadding(true);
-      
-      const decrypted1 = Buffer.concat([
-        decipher1.update(encryptedBuffer),
-        decipher1.final()
-      ]);
-      
-      console.log('Strategy 1 successful! Decrypted size:', decrypted1.length);
-      return decrypted1.toString('base64');
-    } catch (error1) {
-      console.log('Strategy 1 failed:', error1.message);
+
+    const encBuf = Buffer.from(await response.arrayBuffer());
+    console.log('Encrypted image size:', encBuf.byteLength);
+
+    if (encBuf.length <= 32) {
+      throw new Error('Encrypted payload too small');
     }
-    
-    // Strategy 2: Remove HMAC (last 32 bytes) then decrypt
-    try {
-      console.log('Strategy 2: Remove HMAC (32 bytes) then decrypt');
-      const mediaData = encryptedBuffer.slice(0, -32);
-      const decipher2 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher2.setAutoPadding(true);
-      
-      const decrypted2 = Buffer.concat([
-        decipher2.update(mediaData),
-        decipher2.final()
-      ]);
-      
-      console.log('Strategy 2 successful! Decrypted size:', decrypted2.length);
-      return decrypted2.toString('base64');
-    } catch (error2) {
-      console.log('Strategy 2 failed:', error2.message);
+
+    // Split ciphertext and appended HMAC (last 32 bytes)
+    const macFromFile = encBuf.subarray(encBuf.length - 32);
+    const cipherText = encBuf.subarray(0, encBuf.length - 32);
+
+    // Verify HMAC-SHA256. Try common variants.
+    const hmacOverCipherOnly = createHmac('sha256', macKeyBuf).update(cipherText).digest();
+    const hmacOverIvPlusCipher = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
+
+    let hmacOk = false;
+    if (Buffer.compare(macFromFile, hmacOverCipherOnly) === 0) {
+      hmacOk = true;
+      console.log('HMAC verified (ciphertext).');
+    } else if (Buffer.compare(macFromFile, hmacOverIvPlusCipher) === 0) {
+      hmacOk = true;
+      console.log('HMAC verified (iv + ciphertext).');
     }
-    
-    // Strategy 3: Manual padding with direct decryption
-    try {
-      console.log('Strategy 3: Manual padding handling (no HMAC)');
-      const decipher3 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher3.setAutoPadding(false);
-      
-      const decryptedWithPadding = Buffer.concat([
-        decipher3.update(encryptedBuffer),
-        decipher3.final()
-      ]);
-      
-      const paddingLength = decryptedWithPadding[decryptedWithPadding.length - 1];
-      const decrypted3 = paddingLength > 0 && paddingLength <= 16 
-        ? decryptedWithPadding.slice(0, -paddingLength)
-        : decryptedWithPadding;
-      
-      console.log('Strategy 3 successful! Decrypted size:', decrypted3.length);
-      return decrypted3.toString('base64');
-    } catch (error3) {
-      console.log('Strategy 3 failed:', error3.message);
+
+    if (!hmacOk) {
+      if (encrypted_hash) {
+        const encSha = createHash('sha256').update(encBuf).digest('base64');
+        console.log('Encrypted SHA256 (computed vs provided):', encSha, encrypted_hash);
+      }
+      throw new Error('HMAC verification failed');
     }
-    
-    // Strategy 4: Manual padding with HMAC removal
+
+    // Decrypt AES-256-CBC with PKCS#7 padding
+    let decrypted;
     try {
-      console.log('Strategy 4: Manual padding with HMAC removal');
-      const mediaData = encryptedBuffer.slice(0, -32);
-      const decipher4 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-      decipher4.setAutoPadding(false);
-      
-      const decryptedWithPadding = Buffer.concat([
-        decipher4.update(mediaData),
-        decipher4.final()
-      ]);
-      
-      const paddingLength = decryptedWithPadding[decryptedWithPadding.length - 1];
-      const decrypted4 = paddingLength > 0 && paddingLength <= 16 
-        ? decryptedWithPadding.slice(0, -paddingLength)
-        : decryptedWithPadding;
-      
-      console.log('Strategy 4 successful! Decrypted size:', decrypted4.length);
-      return decrypted4.toString('base64');
-    } catch (error4) {
-      console.log('Strategy 4 failed:', error4.message);
+      const decipher = createDecipheriv('aes-256-cbc', keyBuf, ivBuf);
+      decipher.setAutoPadding(true);
+      decrypted = Buffer.concat([decipher.update(cipherText), decipher.final()]);
+    } catch (e) {
+      throw new Error(`AES decryption failed: ${e.message}`);
     }
-    
-    // Strategy 5: Try with different HMAC sizes
-    for (const hmacSize of [0, 16, 20, 32, 64]) {
-      try {
-        console.log(`Strategy 5.${hmacSize}: HMAC size ${hmacSize} bytes`);
-        const mediaData = hmacSize > 0 ? encryptedBuffer.slice(0, -hmacSize) : encryptedBuffer;
-        const decipher5 = createDecipheriv('aes-256-cbc', encryptionKeyBuffer, ivBuffer);
-        decipher5.setAutoPadding(true);
-        
-        const decrypted5 = Buffer.concat([
-          decipher5.update(mediaData),
-          decipher5.final()
-        ]);
-        
-        console.log(`Strategy 5.${hmacSize} successful! Decrypted size:`, decrypted5.length);
-        return decrypted5.toString('base64');
-      } catch (error5) {
-        console.log(`Strategy 5.${hmacSize} failed:`, error5.message);
+
+    if (plaintext_hash) {
+      const plainSha = createHash('sha256').update(decrypted).digest('base64');
+      if (plainSha !== plaintext_hash) {
+        console.warn('Plaintext hash mismatch (computed vs provided):', plainSha, plaintext_hash);
+      } else {
+        console.log('Plaintext hash verified.');
       }
     }
-    
-    throw new Error('All decryption strategies failed');
-    
+
+    console.log('Decryption successful. Size:', decrypted.length);
+    return decrypted.toString('base64');
   } catch (error) {
     console.error('Error decrypting WhatsApp image:', error);
     throw new Error(`Image decryption failed: ${error.message}`);
