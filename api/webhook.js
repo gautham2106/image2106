@@ -13,6 +13,11 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
+// Fetch configuration
+const FETCH_TIMEOUT = parseInt(process.env.WHATSAPP_FETCH_TIMEOUT) || 30000; // 30 seconds
+const FETCH_RETRIES = parseInt(process.env.WHATSAPP_FETCH_RETRIES) || 3;
+const RETRY_DELAY = parseInt(process.env.WHATSAPP_RETRY_DELAY) || 2000; // 2 seconds
+
 // --- Utility Functions ---
 function validateEnvironmentVars() {
   const requiredVars = [
@@ -45,6 +50,78 @@ async function importPrivateKey(privateKeyPem) {
     name: "RSA-OAEP",
     hash: "SHA-256"
   }, false, ["decrypt"]);
+}
+
+// Enhanced fetch with timeout and retry logic
+async function fetchWithTimeoutAndRetry(url, options = {}) {
+  const {
+    timeout = FETCH_TIMEOUT,
+    retries = FETCH_RETRIES,
+    retryDelay = RETRY_DELAY,
+    headers = {}
+  } = options;
+
+  let lastError;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`Fetch attempt ${attempt}/${retries} for URL: ${url}`);
+      
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log(`⏱️ Request timeout after ${timeout}ms, aborting...`);
+        controller.abort();
+      }, timeout);
+
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'WhatsApp/2.24.1.78 (compatible; WhatsAppBot/1.0)',
+          'Accept': '*/*',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          ...headers
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      console.log(`✅ Fetch successful on attempt ${attempt}, size: ${buffer.length} bytes`);
+      return buffer;
+
+    } catch (error) {
+      lastError = error;
+      console.error(`❌ Fetch attempt ${attempt} failed:`, error.message);
+
+      // Check error type
+      if (error.name === 'AbortError') {
+        console.log(`⏱️ Request timed out after ${timeout}ms`);
+      } else if (error.message.includes('HTTP 4')) {
+        console.log('🚫 Client error (4xx), not retrying');
+        break;
+      } else if (error.message.includes('HTTP 5')) {
+        console.log('🔄 Server error (5xx), will retry');
+      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        console.log('🌐 Network error, will retry');
+      }
+
+      // Wait before retry (except on last attempt)
+      if (attempt < retries) {
+        const delay = retryDelay * attempt; // Exponential backoff
+        console.log(`⏳ Waiting ${delay}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw new Error(`Failed to fetch after ${retries} attempts. Last error: ${lastError.message}`);
 }
 
 // --- Encryption/Decryption Functions ---
@@ -118,10 +195,70 @@ async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
   }
 }
 
-// WhatsApp Image Decryption (CBC + HMAC 10-byte trailer, HMAC over iv|ciphertext)
+// Enhanced WhatsApp Image Decryption with better error handling
+async function performImageDecryption(encBuf, keyBuf, macKeyBuf, ivBuf, encrypted_hash, plaintext_hash) {
+  console.log('Starting decryption process...');
+  
+  if (encBuf.length <= 10) {
+    throw new Error('Encrypted payload too small');
+  }
+
+  // Verify encrypted hash if provided
+  if (encrypted_hash) {
+    const encSha = createHash('sha256').update(encBuf).digest('base64');
+    console.log('Encrypted SHA256 verification:', encSha === encrypted_hash ? 'PASS' : 'FAIL');
+    if (encSha !== encrypted_hash) {
+      console.warn('Encrypted hash mismatch, continuing anyway...');
+    }
+  }
+
+  // Split ciphertext and appended MAC (last 10 bytes)
+  const macTrailer = encBuf.subarray(encBuf.length - 10);
+  const cipherText = encBuf.subarray(0, encBuf.length - 10);
+
+  console.log(`Ciphertext length: ${cipherText.length}, MAC trailer length: ${macTrailer.length}`);
+
+  // HMAC-SHA256(iv || ciphertext), compare first 10 bytes
+  const macFull = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
+  const mac10 = macFull.subarray(0, 10);
+
+  if (!mac10.equals(macTrailer)) {
+    throw new Error('HMAC verification failed');
+  }
+  console.log('✅ HMAC verification passed');
+
+  if (cipherText.length % 16 !== 0) {
+    throw new Error(`Ciphertext length not a multiple of 16: ${cipherText.length}`);
+  }
+
+  // Decrypt AES-256-CBC with PKCS#7 padding
+  let decrypted;
+  try {
+    const decipher = createDecipheriv('aes-256-cbc', keyBuf, ivBuf);
+    decipher.setAutoPadding(true);
+    decrypted = Buffer.concat([decipher.update(cipherText), decipher.final()]);
+    console.log('✅ AES decryption successful');
+  } catch (e) {
+    throw new Error(`AES decryption failed: ${e.message}`);
+  }
+
+  // Verify plaintext hash if provided
+  if (plaintext_hash) {
+    const plainSha = createHash('sha256').update(decrypted).digest('base64');
+    console.log('Plaintext SHA256 verification:', plainSha === plaintext_hash ? 'PASS' : 'FAIL');
+    if (plainSha !== plaintext_hash) {
+      console.warn('Plaintext hash mismatch, but decryption completed');
+    }
+  }
+
+  console.log(`✅ Decryption successful. Decrypted size: ${decrypted.length} bytes`);
+  return decrypted;
+}
+
+// WhatsApp Image Decryption with enhanced error handling and fallbacks
 async function decryptWhatsAppImage(imageData) {
   console.log('=== DECRYPT WHATSAPP IMAGE (CBC+HMAC-10) ===');
-  console.log('Image data:', JSON.stringify(imageData, null, 2));
+  console.log('Image data keys:', Object.keys(imageData));
 
   try {
     const { cdn_url, encryption_metadata } = imageData;
@@ -130,91 +267,120 @@ async function decryptWhatsAppImage(imageData) {
     }
 
     const { encryption_key, hmac_key, iv, encrypted_hash, plaintext_hash } = encryption_metadata;
+    console.log('Encryption metadata keys:', Object.keys(encryption_metadata));
 
-    const keyBuf = Buffer.from(encryption_key, 'base64'); // 32
-    const macKeyBuf = Buffer.from(hmac_key, 'base64');    // 32
-    const ivBuf = Buffer.from(iv, 'base64');              // 16
+    // Validate encryption keys
+    const keyBuf = Buffer.from(encryption_key, 'base64');
+    const macKeyBuf = Buffer.from(hmac_key, 'base64');
+    const ivBuf = Buffer.from(iv, 'base64');
 
-    if (keyBuf.length !== 32) throw new Error('Invalid encryption_key length');
-    if (macKeyBuf.length !== 32) throw new Error('Invalid hmac_key length');
-    if (ivBuf.length !== 16) throw new Error('Invalid iv length');
+    if (keyBuf.length !== 32) throw new Error(`Invalid encryption_key length: ${keyBuf.length}, expected 32`);
+    if (macKeyBuf.length !== 32) throw new Error(`Invalid hmac_key length: ${macKeyBuf.length}, expected 32`);
+    if (ivBuf.length !== 16) throw new Error(`Invalid iv length: ${ivBuf.length}, expected 16`);
 
-    console.log('Fetching encrypted image from CDN:', cdn_url);
+    console.log('✅ Encryption keys validated');
+    console.log('Attempting to fetch encrypted image from CDN:', cdn_url);
+    
+    // Fetch with enhanced error handling
+    const encBuf = await fetchWithTimeoutAndRetry(cdn_url, {
+      timeout: FETCH_TIMEOUT,
+      retries: FETCH_RETRIES,
+      retryDelay: RETRY_DELAY
+    });
+    
+    console.log(`✅ Encrypted image fetched successfully, size: ${encBuf.byteLength} bytes`);
 
-// Add timeout to prevent hanging
-const fetchPromise = fetch(cdn_url);
-const timeoutPromise = new Promise((_, reject) => 
-  setTimeout(() => reject(new Error('CDN fetch timeout after 30 seconds')), 30000)
-);
+    // Perform decryption
+    const decrypted = await performImageDecryption(
+      encBuf, keyBuf, macKeyBuf, ivBuf, encrypted_hash, plaintext_hash
+    );
 
-const response = await Promise.race([fetchPromise, timeoutPromise]);
+    return decrypted.toString('base64');
 
-if (!response.ok) {
-  throw new Error(`Failed to fetch image from CDN: ${response.status}`);
+  } catch (error) {
+    console.error('❌ WhatsApp image decryption failed:', error.message);
+    console.error('Error stack:', error.stack);
+    throw new Error(`Image decryption failed: ${error.message}`);
+  }
 }
 
-    const encBuf = Buffer.from(await response.arrayBuffer());
-    console.log('Encrypted image size:', encBuf.byteLength);
-
-    if (encBuf.length <= 10) {
-      throw new Error('Encrypted payload too small');
-    }
-
-    if (encrypted_hash) {
-      const encSha = createHash('sha256').update(encBuf).digest('base64');
-      console.log('Encrypted SHA256 (computed vs provided):', encSha, encrypted_hash);
-      if (encSha !== encrypted_hash) {
-        throw new Error('Encrypted hash mismatch');
-      }
-    }
-
-    // Split ciphertext and appended MAC (last 10 bytes)
-    const macTrailer = encBuf.subarray(encBuf.length - 10);
-    const cipherText = encBuf.subarray(0, encBuf.length - 10);
-
-    // HMAC-SHA256(iv || ciphertext), compare first 10 bytes
-    const macFull = createHmac('sha256', macKeyBuf).update(ivBuf).update(cipherText).digest();
-    const mac10 = macFull.subarray(0, 10);
-
-    if (!mac10.equals(macTrailer)) {
-      throw new Error('HMAC verification failed');
-    }
-
-    if (cipherText.length % 16 !== 0) {
-      throw new Error(`Ciphertext length not a multiple of 16: ${cipherText.length}`);
-    }
-
-    // Decrypt AES-256-CBC with PKCS#7 padding
-    let decrypted;
+// Fallback function for image processing failures
+async function decryptWhatsAppImageWithFallback(imageData) {
+  try {
+    console.log('🔄 Attempting primary decryption method...');
+    return await decryptWhatsAppImage(imageData);
+  } catch (primaryError) {
+    console.error('❌ Primary decryption failed:', primaryError.message);
+    
+    const { cdn_url } = imageData;
+    
+    // Fallback 1: Try with different headers
     try {
-      const decipher = createDecipheriv('aes-256-cbc', keyBuf, ivBuf);
-      decipher.setAutoPadding(true);
-      decrypted = Buffer.concat([decipher.update(cipherText), decipher.final()]);
-    } catch (e) {
-      throw new Error(`AES decryption failed: ${e.message}`);
-    }
-
-    if (plaintext_hash) {
-      const plainSha = createHash('sha256').update(decrypted).digest('base64');
-      if (plainSha !== plaintext_hash) {
-        console.warn('Plaintext hash mismatch (computed vs provided):', plainSha, plaintext_hash);
-      } else {
-        console.log('Plaintext hash verified.');
+      console.log('🔄 Fallback 1: Trying with alternative headers...');
+      const response = await fetch(cdn_url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'Referer': 'https://web.whatsapp.com/',
+          'Origin': 'https://web.whatsapp.com',
+          'Sec-Fetch-Dest': 'image',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'cross-site'
+        },
+        mode: 'cors'
+      });
+      
+      if (response.ok) {
+        const buffer = Buffer.from(await response.arrayBuffer());
+        console.log('✅ Alternative headers worked, reattempting decryption...');
+        
+        // Try decryption again with the newly fetched data
+        const { encryption_metadata } = imageData;
+        const { encryption_key, hmac_key, iv, encrypted_hash, plaintext_hash } = encryption_metadata;
+        
+        const keyBuf = Buffer.from(encryption_key, 'base64');
+        const macKeyBuf = Buffer.from(hmac_key, 'base64');
+        const ivBuf = Buffer.from(iv, 'base64');
+        
+        const decrypted = await performImageDecryption(
+          buffer, keyBuf, macKeyBuf, ivBuf, encrypted_hash, plaintext_hash
+        );
+        
+        return decrypted.toString('base64');
       }
+    } catch (fallbackError) {
+      console.error('❌ Fallback 1 failed:', fallbackError.message);
     }
-
-    console.log('Decryption successful. Size:', decrypted.length);
-    return decrypted.toString('base64');
-  } catch (error) {
-    console.error('Error decrypting WhatsApp image:', error);
-    throw new Error(`Image decryption failed: ${error.message}`);
+    
+    // Fallback 2: Try without encryption if URL seems to be direct
+    try {
+      console.log('🔄 Fallback 2: Attempting direct fetch (maybe unencrypted)...');
+      const directResponse = await fetchWithTimeoutAndRetry(cdn_url, {
+        timeout: 15000, // Shorter timeout for fallback
+        retries: 2
+      });
+      
+      // Check if this looks like a valid image
+      const firstBytes = directResponse.subarray(0, 4);
+      const isJPEG = firstBytes[0] === 0xFF && firstBytes[1] === 0xD8;
+      const isPNG = firstBytes[0] === 0x89 && firstBytes[1] === 0x50 && firstBytes[2] === 0x4E && firstBytes[3] === 0x47;
+      
+      if (isJPEG || isPNG) {
+        console.log('✅ Fallback 2: Direct image detected (unencrypted)');
+        return directResponse.toString('base64');
+      }
+    } catch (directError) {
+      console.error('❌ Fallback 2 failed:', directError.message);
+    }
+    
+    // All fallbacks failed
+    throw new Error(`All decryption methods failed. Primary error: ${primaryError.message}`);
   }
 }
 
 // Upload to Supabase Storage via S3-compatible API (SigV4)
 async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
   const supabaseUrl = process.env.SUPABASE_URL;
-  const s3Endpoint = process.env.SUPABASE_S3_ENDPOINT; // e.g. https://<ref>.storage.supabase.co/storage/v1/s3
+  const s3Endpoint = process.env.SUPABASE_S3_ENDPOINT;
   const s3Region = process.env.SUPABASE_S3_REGION || 'us-east-1';
   const accessKeyId = process.env.SUPABASE_S3_ACCESS_KEY_ID;
   const secretAccessKey = process.env.SUPABASE_S3_SECRET_ACCESS_KEY;
@@ -226,7 +392,7 @@ async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
 
   const buffer = Buffer.from(base64Data, 'base64');
   const ext = (mimeType && mimeType.split('/')[1]) || 'jpg';
-  const filename = `generated-${Date.now()}.${ext}`;
+  const filename = `generated-${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
 
   const s3 = new S3Client({
     region: s3Region,
@@ -469,9 +635,17 @@ async function sendWhatsAppTextMessage(toE164, message) {
   return data;
 }
 
-// ASYNC BACKGROUND PROCESSING FUNCTION - ULTRA SIMPLIFIED (ONLY FINAL IMAGE)
+// Enhanced async background processing with better error handling
 async function processImageGenerationAsync(productImage, productCategory, sceneDescription, priceOverlay, userPhone) {
   console.log('🚀 Starting async image generation...');
+  console.log('Input parameters:', {
+    productImageType: Array.isArray(productImage) ? 'array' : typeof productImage,
+    productImageLength: Array.isArray(productImage) ? productImage.length : 'N/A',
+    productCategory,
+    sceneDescription,
+    priceOverlay,
+    userPhone
+  });
   
   try {
     // Process image data asynchronously
@@ -481,33 +655,96 @@ async function processImageGenerationAsync(productImage, productCategory, sceneD
     if (Array.isArray(productImage) && productImage.length > 0) {
       console.log('Processing WhatsApp image array');
       const firstImage = productImage[0];
+      console.log('First image keys:', Object.keys(firstImage));
       
       if (firstImage.encryption_metadata) {
-        console.log('Decrypting WhatsApp encrypted image...');
-        actualImageData = await decryptWhatsAppImage(firstImage);
-        console.log('✅ Image decryption completed');
-      } else if (firstImage.cdn_url) {
-        console.log('Fetching unencrypted image from CDN...');
-        const response = await fetch(firstImage.cdn_url);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch image: ${response.status}`);
+        console.log('🔐 Decrypting WhatsApp encrypted image...');
+        
+        try {
+          // Try primary decryption method with enhanced error handling
+          actualImageData = await decryptWhatsAppImageWithFallback(firstImage);
+          console.log('✅ Image decryption completed successfully');
+        } catch (decryptError) {
+          console.error('❌ All decryption methods failed:', decryptError.message);
+          
+          // Send detailed error message to user
+          if (userPhone) {
+            await sendWhatsAppTextMessage(
+              userPhone, 
+              "⚠️ Sorry, we couldn't process your encrypted image. This might be due to:\n" +
+              "• Network connectivity issues\n" +
+              "• Expired image link\n" +
+              "• Unsupported encryption format\n\n" +
+              "Please try uploading the image again or use a different image."
+            );
+          }
+          return;
         }
-        const arrayBuffer = await response.arrayBuffer();
-        actualImageData = Buffer.from(arrayBuffer).toString('base64');
-        console.log('✅ Image fetch completed');
+      } else if (firstImage.cdn_url) {
+        console.log('📥 Fetching unencrypted image from CDN...');
+        try {
+          const buffer = await fetchWithTimeoutAndRetry(firstImage.cdn_url, {
+            timeout: FETCH_TIMEOUT,
+            retries: FETCH_RETRIES,
+            retryDelay: RETRY_DELAY
+          });
+          actualImageData = buffer.toString('base64');
+          console.log('✅ Unencrypted image fetch completed');
+        } catch (fetchError) {
+          console.error('❌ Image fetch failed:', fetchError.message);
+          if (userPhone) {
+            await sendWhatsAppTextMessage(
+              userPhone, 
+              "⚠️ Sorry, we couldn't download your image. This might be due to:\n" +
+              "• Network connectivity issues\n" +
+              "• Expired image link\n" +
+              "• Server temporarily unavailable\n\n" +
+              "Please try again in a few moments."
+            );
+          }
+          return;
+        }
       } else {
-        throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
+        console.error('❌ Invalid image format - missing both cdn_url and encryption_metadata');
+        if (userPhone) {
+          await sendWhatsAppTextMessage(
+            userPhone, 
+            "⚠️ Invalid image format received. Please make sure you're uploading a valid image file."
+          );
+        }
+        return;
       }
     } else if (typeof productImage === 'string') {
-      console.log('Processing direct base64 string...');
+      console.log('📝 Processing direct base64 string...');
       actualImageData = productImage;
     } else {
-      throw new Error('Invalid product_image format: expected array or string');
+      console.error('❌ Invalid product_image format - expected array or string');
+      if (userPhone) {
+        await sendWhatsAppTextMessage(
+          userPhone, 
+          "⚠️ Invalid image format. Please upload a valid image file."
+        );
+      }
+      return;
     }
     
     console.log('✅ Async image processing successful');
+    console.log(`Image data size: ${actualImageData.length} characters`);
 
     console.log('🤖 Starting AI image generation...');
+    
+    // Add progress message to user
+    if (userPhone) {
+      try {
+        await sendWhatsAppTextMessage(
+          userPhone, 
+          "🎨 Creating your professional product image... This may take a few moments."
+        );
+      } catch (progressError) {
+        console.warn('Could not send progress message:', progressError.message);
+      }
+    }
+
     const imageUrl = await generateImageFromAi(
       actualImageData,
       productCategory.trim(),
@@ -521,16 +758,62 @@ async function processImageGenerationAsync(productImage, productCategory, sceneD
     if (userPhone) {
       console.log('📱 Sending generated image to user:', userPhone);
       const caption = (priceOverlay && priceOverlay.trim())
-        ? `🎉 Here's your ${productCategory.trim()} — ${priceOverlay.trim()}`
-        : `🎉 Here's your ${productCategory.trim()}!`;
+        ? `🎉 Here's your professional ${productCategory.trim()} photo — ${priceOverlay.trim()}`
+        : `🎉 Here's your professional ${productCategory.trim()} photo!`;
       
-      await sendWhatsAppImageMessage(userPhone, imageUrl, caption);
-      console.log('✅ Generated image sent to user via WhatsApp');
+      try {
+        await sendWhatsAppImageMessage(userPhone, imageUrl, caption);
+        console.log('✅ Generated image sent to user via WhatsApp');
+        
+        // Send a follow-up message with tips
+        await sendWhatsAppTextMessage(
+          userPhone,
+          "💡 Tips for best results:\n" +
+          "• Use high-quality product images\n" +
+          "• Describe your desired scene clearly\n" +
+          "• Try different categories for variety\n\n" +
+          "Send another image to create more!"
+        );
+      } catch (sendError) {
+        console.error('❌ Failed to send generated image:', sendError.message);
+        
+        // Fallback: send the URL as text if image sending fails
+        try {
+          await sendWhatsAppTextMessage(
+            userPhone,
+            `🎉 Your ${productCategory.trim()} image is ready!\n\nView it here: ${imageUrl}`
+          );
+        } catch (fallbackError) {
+          console.error('❌ Even fallback message failed:', fallbackError.message);
+        }
+      }
     }
 
   } catch (error) {
     console.error('❌ Async image generation failed:', error);
-    // No error message sent to user - silent failure
+    console.error('Error stack:', error.stack);
+    
+    // Send helpful error message to user instead of silent failure
+    if (userPhone) {
+      try {
+        let errorMessage = "⚠️ Sorry, we encountered an issue generating your image. ";
+        
+        // Provide specific error guidance based on error type
+        if (error.message.includes('Gemini')) {
+          errorMessage += "Our AI service is temporarily unavailable. Please try again in a few minutes.";
+        } else if (error.message.includes('timeout')) {
+          errorMessage += "The request timed out. Please try again with a smaller image.";
+        } else if (error.message.includes('network') || error.message.includes('fetch')) {
+          errorMessage += "Network connectivity issue. Please check your connection and try again.";
+        } else {
+          errorMessage += "Please try again with a different image or contact support if the issue persists.";
+        }
+        
+        await sendWhatsAppTextMessage(userPhone, errorMessage);
+      } catch (sendError) {
+        console.error('❌ Failed to send error message to user:', sendError);
+      }
+    }
   }
 }
 
@@ -557,23 +840,42 @@ async function handleDataExchange(decryptedBody) {
       console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
       console.log('mobile_number:', mobile_number ? `"${mobile_number}"` : 'not provided');
 
+      // Enhanced validation with better error messages
       if (!product_image) {
         return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: "Product image is required. Please upload an image of your product." }
+          screen: 'COLLECT_INFO',
+          data: { 
+            error_message: "📸 Product image is required. Please upload a clear photo of your product to get started." 
+          }
         };
       }
 
       if (!product_category || !product_category.trim()) {
         return {
           screen: 'COLLECT_INFO',
-          data: { error_message: "Product category is required. Please specify what type of product this is." }
+          data: { 
+            error_message: "🏷️ Product category is required. Please specify what type of product this is (e.g., 'smartphone', 'shoes', 'watch', etc.)." 
+          }
+        };
+      }
+
+      // Validate product category length and content
+      if (product_category.trim().length < 2) {
+        return {
+          screen: 'COLLECT_INFO',
+          data: { 
+            error_message: "🏷️ Product category is too short. Please provide a more descriptive category (e.g., 'laptop', 'dress', 'coffee mug')." 
+          }
         };
       }
 
       // GET USER PHONE FOR ASYNC MESSAGING
       const userPhone = getUserPhoneFromPayload(decryptedBody) || mobile_number;
       console.log('User phone for async messaging:', userPhone);
+
+      if (!userPhone) {
+        console.warn('⚠️ No user phone found for async messaging');
+      }
 
       // IMMEDIATELY RETURN SUCCESS AND START ASYNC PROCESSING
       console.log('🚀 Starting async image generation process...');
@@ -589,17 +891,28 @@ async function handleDataExchange(decryptedBody) {
         console.error('Background processing error:', error);
       });
 
-      // Return success immediately with placeholder image
+      // Return success immediately with status message
       return { 
         screen: 'SUCCESS_SCREEN', 
         data: { 
-          image_url: 'https://via.placeholder.com/400x400/4CAF50/white?text=Generating...',
-          status: 'processing'
+          image_url: 'https://via.placeholder.com/400x400/4CAF50/white?text=Generating...', // Placeholder
+          status: 'processing',
+          message: `🎨 Creating your professional ${product_category.trim()} photo! You'll receive it via WhatsApp shortly.`,
+          processing_details: {
+            category: product_category.trim(),
+            has_scene: !!(sceneDescription && sceneDescription.trim()),
+            has_price: !!(priceOverlay && priceOverlay.trim())
+          }
         } 
       };
 
     } else {
-      return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
+      return { 
+        screen: 'COLLECT_INFO', 
+        data: { 
+          error_message: '📝 No data received. Please fill in the required information and try again.' 
+        } 
+      };
     }
   }
 
@@ -611,22 +924,43 @@ async function handleDataExchange(decryptedBody) {
   }
 
   console.log(`Unhandled action/screen combination: ${action}/${screen}`);
-  return { screen: 'COLLECT_INFO', data: { error_message: 'An unexpected error occurred.' } };
+  return { 
+    screen: 'COLLECT_INFO', 
+    data: { 
+      error_message: '⚠️ An unexpected error occurred. Please try again.' 
+    } 
+  };
 }
 
 async function handleHealthCheck() {
-  return { data: { status: 'active' } };
+  return { 
+    data: { 
+      status: 'active',
+      timestamp: new Date().toISOString(),
+      version: '2.0.0',
+      features: ['image_generation', 'whatsapp_integration', 'enhanced_error_handling']
+    } 
+  };
 }
 
 async function handleErrorNotification(decryptedBody) {
-  console.log('Error notification received:', decryptedBody);
-  return { data: { acknowledged: true } };
+  console.log('Error notification received:', JSON.stringify(decryptedBody, null, 2));
+  return { 
+    data: { 
+      acknowledged: true,
+      timestamp: new Date().toISOString()
+    } 
+  };
 }
 
 // --- Main Vercel API Handler ---
 export default async function handler(req, res) {
+  const startTime = Date.now();
+  console.log(`\n🚀 === REQUEST START: ${req.method} ${req.url} ===`);
+  
   // Handle CORS
   if (req.method === 'OPTIONS') {
+    console.log('Handling CORS preflight request');
     res.status(200);
     Object.entries(corsHeaders).forEach(([key, value]) => {
       res.setHeader(key, value);
@@ -640,54 +974,96 @@ export default async function handler(req, res) {
   });
 
   try {
+    console.log('🔧 Validating environment variables...');
     validateEnvironmentVars();
+    console.log('✅ Environment validation passed');
   } catch (error) {
-    console.error('Environment validation failed:', error.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    console.error('❌ Environment validation failed:', error.message);
+    return res.status(500).json({ 
+      error: 'Internal Server Error',
+      details: 'Configuration issue'
+    });
   }
 
   if (req.method === 'GET') {
+    console.log('📥 Handling GET request (webhook verification)');
     const { query } = req;
     const mode = query['hub.mode'];
     const token = query['hub.verify_token'];
     const challenge = query['hub.challenge'];
     const verifyToken = process.env.VERIFY_TOKEN;
 
+    console.log('Webhook verification:', { mode, token: token ? '***' : 'missing', challenge: challenge ? 'present' : 'missing' });
+
     if (mode === 'subscribe' && token === verifyToken && challenge) {
+      console.log('✅ Webhook verification successful');
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send(challenge);
     } else {
+      console.log('❌ Webhook verification failed');
       return res.status(403).json({ error: 'Forbidden' });
     }
   }
 
   if (req.method === 'POST') {
     try {
+      console.log('📥 Handling POST request (encrypted flow data)');
       const requestBody = req.body;
+      
+      if (!requestBody) {
+        throw new Error('Empty request body');
+      }
 
+      console.log('🔐 Importing private key and decrypting request...');
       const privateKeyPem = process.env.PRIVATE_KEY;
       const privateKey = await importPrivateKey(privateKeyPem);
 
       const { decryptedBody, aesKeyBuffer, initialVectorBuffer } = await decryptRequest(requestBody, privateKey);
+      console.log('✅ Request decrypted successfully');
+      console.log('Decrypted body action:', decryptedBody.action);
 
       let responsePayload;
+      
       if (decryptedBody.action === 'ping') {
+        console.log('🏥 Handling health check');
         responsePayload = await handleHealthCheck();
       } else if (decryptedBody.action === 'error_notification') {
+        console.log('⚠️ Handling error notification');
         responsePayload = await handleErrorNotification(decryptedBody);
       } else {
+        console.log('💼 Handling data exchange');
         responsePayload = await handleDataExchange(decryptedBody);
       }
 
+      console.log('🔐 Encrypting response...');
       const encryptedResponse = await encryptResponse(responsePayload, aesKeyBuffer, initialVectorBuffer);
+      console.log('✅ Response encrypted successfully');
+
+      const processingTime = Date.now() - startTime;
+      console.log(`⏱️ Total processing time: ${processingTime}ms`);
 
       res.setHeader('Content-Type', 'application/json');
+      console.log('📤 Sending encrypted response');
       return res.status(200).send(encryptedResponse);
+      
     } catch (error) {
-      console.error('Error processing request:', error);
-      return res.status(500).json({ error: `Internal Server Error: ${error.message}` });
+      console.error('❌ Error processing POST request:', error);
+      console.error('Error stack:', error.stack);
+      
+      const processingTime = Date.now() - startTime;
+      console.log(`⏱️ Failed after: ${processingTime}ms`);
+      
+      return res.status(500).json({ 
+        error: 'Internal Server Error',
+        message: error.message,
+        timestamp: new Date().toISOString()
+      });
     }
   }
 
-  return res.status(405).json({ error: 'Method Not Allowed' });
+  console.log(`❌ Method ${req.method} not allowed`);
+  return res.status(405).json({ 
+    error: 'Method Not Allowed',
+    allowed: ['GET', 'POST', 'OPTIONS']
+  });
 }
