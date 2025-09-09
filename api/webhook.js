@@ -83,28 +83,42 @@ async function decryptRequest(body, privateKey) {
 }
 
 async function encryptResponse(response, aesKeyBuffer, initialVectorBuffer) {
+  console.log('Starting response encryption...');
+  console.log('Response to encrypt:', JSON.stringify(response));
+  
   const { webcrypto } = await import('crypto');
   
-  // Flip IV bits for response
-  const flippedIv = new Uint8Array(initialVectorBuffer.map(byte => ~byte & 0xFF));
+  try {
+    // Flip IV bits for response
+    const flippedIv = new Uint8Array(initialVectorBuffer.map(byte => ~byte & 0xFF));
+    console.log('IV flipped successfully');
 
-  const aesKey = await webcrypto.subtle.importKey(
-    "raw", 
-    aesKeyBuffer, 
-    { name: "AES-GCM" }, 
-    false, 
-    ["encrypt"]
-  );
+    const aesKey = await webcrypto.subtle.importKey(
+      "raw", 
+      aesKeyBuffer, 
+      { name: "AES-GCM" }, 
+      false, 
+      ["encrypt"]
+    );
+    console.log('AES key imported for encryption');
 
-  const responseBuffer = new TextEncoder().encode(JSON.stringify(response));
-  
-  const encryptedBuffer = await webcrypto.subtle.encrypt(
-    { name: "AES-GCM", iv: flippedIv, tagLength: 128 },
-    aesKey,
-    responseBuffer
-  );
+    const responseBuffer = new TextEncoder().encode(JSON.stringify(response));
+    console.log('Response encoded to buffer, length:', responseBuffer.length);
+    
+    const encryptedBuffer = await webcrypto.subtle.encrypt(
+      { name: "AES-GCM", iv: flippedIv, tagLength: 128 },
+      aesKey,
+      responseBuffer
+    );
+    console.log('Response encrypted successfully');
 
-  return Buffer.from(new Uint8Array(encryptedBuffer)).toString('base64');
+    const result = Buffer.from(new Uint8Array(encryptedBuffer)).toString('base64');
+    console.log('Response converted to base64, length:', result.length);
+    return result;
+  } catch (error) {
+    console.error('❌ Encryption error:', error);
+    throw new Error(`Encryption failed: ${error.message}`);
+  }
 }
 
 // --- WhatsApp Image Decryption ---
