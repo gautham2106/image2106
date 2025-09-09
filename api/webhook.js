@@ -900,8 +900,8 @@ async function handleDataExchange(decryptedBody) {
           message: `🎨 Creating your professional ${product_category.trim()} photo! You'll receive it via WhatsApp shortly.`,
           processing_details: {
             category: product_category.trim(),
-            has_scene: !!(sceneDescription && sceneDescription.trim()),
-            has_price: !!(priceOverlay && priceOverlay.trim())
+            has_scene: !!(scene_description && scene_description.trim()),
+            has_price: !!(price_overlay && price_overlay.trim())
           }
         } 
       };
