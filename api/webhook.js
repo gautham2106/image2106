@@ -417,89 +417,56 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
   return data;
 }
 
-async function sendWhatsAppTextMessage(toE164, text) {
-  if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
-  if (!text) throw new Error('Missing text message');
-
-  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: toE164,
-      type: 'text',
-      text: {
-        body: text
-      }
-    })
-  });
-
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(`WhatsApp send failed ${resp.status}: ${JSON.stringify(data)}`);
-  }
-  return data;
-}
-
-// --- Handle Flow Response Message ---
+// --- Flow Response Message Handler ---
 async function handleFlowResponseMessage(messageBody) {
   console.log('=== HANDLING FLOW RESPONSE MESSAGE ===');
-  console.log('Full message body:', JSON.stringify(messageBody, null, 2));
-
+  
   try {
     const message = messageBody?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!message) {
-      console.error('No message found in webhook payload');
+      console.log('No message found in webhook body');
       return;
     }
-
-    if (message.type !== 'interactive' || message.interactive?.type !== 'nfm_reply') {
-      console.log('Message is not a flow response, skipping');
-      return;
-    }
-
-    const responseJson = message.interactive.nfm_reply.response_json;
-    if (!responseJson) {
-      console.error('No response_json found in flow response');
-      return;
-    }
-
-    const flowData = JSON.parse(responseJson);
-    console.log('Parsed flow data:', JSON.stringify(flowData, null, 2));
 
     const userPhone = getUserPhoneFromMessage(messageBody);
     if (!userPhone) {
-      console.error('Could not extract user phone number');
+      console.log('No user phone found in message');
       return;
     }
 
-    // Extract the flow data
-    const { 
-      product_category, 
-      scene_description, 
-      price_overlay, 
-      product_image 
-    } = flowData;
+    console.log('User phone:', userPhone);
+    console.log('Message type:', message.type);
 
-    console.log('=== PROCESSING FLOW DATA ===');
-    console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
-    console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
-    console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
-    console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
+    // Check if this is a flow response message
+    if (message.type !== 'interactive' || !message.interactive?.nfm_reply) {
+      console.log('Not a flow response message, ignoring');
+      return;
+    }
+
+    const flowResponse = message.interactive.nfm_reply;
+    console.log('Flow response data:', JSON.stringify(flowResponse, null, 2));
+
+    const responseJson = JSON.parse(flowResponse.response_json);
+    console.log('Parsed response JSON:', JSON.stringify(responseJson, null, 2));
+
+    // Extract the form data from the flow response
+    const { mobile_number, product_category, scene_description, price_overlay, product_image } = responseJson;
+
+    console.log('=== EXTRACTED FLOW DATA ===');
+    console.log('mobile_number:', mobile_number || 'not provided');
+    console.log('product_category:', product_category || 'MISSING');
+    console.log('scene_description:', scene_description || 'not provided');
+    console.log('price_overlay:', price_overlay || 'not provided');
+    console.log('product_image:', product_image ? 'present' : 'MISSING');
+
+    // Validate required fields
+    if (!product_category || !product_category.trim()) {
+      console.error('❌ Product category missing from flow response');
+      return;
+    }
 
     if (!product_image) {
-      console.error('Product image is required but missing');
-      return;
-    }
-
-    if (!product_category || !product_category.trim()) {
-      console.error('Product category is required but missing');
+      console.error('❌ Product image missing from flow response');
       return;
     }
 
@@ -579,7 +546,16 @@ async function handleDataExchange(decryptedBody) {
     return { screen: 'COLLECT_INFO', data: {} };
   }
 
-  if (action === 'data_exchange') {
+  if (action === 'navigate') {
+    console.log('=== NAVIGATE ACTION ===');
+    if (screen === 'COLLECT_IMAGE_SCENE') {
+      return { screen: 'SUCCESS_SCREEN', data: {} };
+    }
+    return { screen: 'COLLECT_INFO', data: {} };
+  }
+
+  if (action === 'complete') {
+    console.log('=== COMPLETE ACTION ===');
     // For flow response approach, just return success without processing
     // The actual processing will happen when flow response webhook is received
     return { 
@@ -593,6 +569,9 @@ async function handleDataExchange(decryptedBody) {
   if (action === 'BACK') {
     if (screen === 'COLLECT_IMAGE_SCENE') {
       return { screen: 'COLLECT_INFO', data: {} };
+    }
+    if (screen === 'SUCCESS_SCREEN') {
+      return { screen: 'COLLECT_IMAGE_SCENE', data: {} };
     }
     return { screen: 'COLLECT_INFO', data: {} };
   }
