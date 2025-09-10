@@ -1,4 +1,4 @@
-// Vercel Node.js API Route for WhatsApp Flow with Gemini API
+// Vercel Node.js API Route for WhatsApp Flow with Gemini API + Webhook Listening
 // Place this file at: api/webhook.js
 
 import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
@@ -383,7 +383,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 }
 
 // --- WhatsApp helpers ---
-// Replace your current getUserPhoneFromPayload with this
 function getUserPhoneFromPayload(decryptedBody) {
   const candidates = [
     decryptedBody?.user?.wa_id,
@@ -435,6 +434,105 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
     throw new Error(`WhatsApp send failed ${resp.status}: ${JSON.stringify(data)}`);
   }
   return data;
+}
+
+// NEW: Function to send WhatsApp Flow
+async function sendWhatsAppFlow(recipientWhatsAppId) {
+  console.log('=== SENDING WHATSAPP FLOW ===');
+  console.log('Recipient:', recipientWhatsAppId);
+
+  const flowPayload = {
+    recipient_type: "individual",
+    messaging_product: "whatsapp",
+    to: recipientWhatsAppId,
+    type: "interactive",
+    interactive: {
+      type: "flow",
+      header: {
+        type: "text",
+        text: "🚀 AI Product Photo Generator"
+      },
+      body: {
+        text: "Transform your product photos with AI! Upload your product image and let our AI create stunning marketing photos."
+      },
+      footer: {
+        text: "Powered by AI Magic ✨"
+      },
+      action: {
+        name: "flow",
+        parameters: {
+          flow_message_version: "3",
+          flow_token: "flows-builder-ba2d3f77",
+          flow_id: "24448880388065482",
+          flow_cta: "Start Creating",
+          flow_action: "navigate",
+          flow_action_payload: {
+            screen: "COLLECT_INFO"
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(flowPayload)
+      }
+    );
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(`WhatsApp flow send failed ${response.status}: ${JSON.stringify(data)}`);
+    }
+
+    console.log('✅ Flow sent successfully:', data);
+    return data;
+  } catch (error) {
+    console.error('❌ Error sending flow:', error);
+    throw error;
+  }
+}
+
+// NEW: Handle incoming WhatsApp messages
+async function handleIncomingMessage(body) {
+  console.log('=== HANDLING INCOMING MESSAGE ===');
+  
+  if (body.object !== 'whatsapp_business_account') {
+    console.log('Not a WhatsApp message, ignoring');
+    return;
+  }
+
+  body.entry.forEach(entry => {
+    entry.changes.forEach(change => {
+      if (change.field === 'messages') {
+        const messages = change.value.messages;
+        
+        if (messages) {
+          messages.forEach(async (message) => {
+            console.log('📱 Message received:', JSON.stringify(message, null, 2));
+            
+            // Extract sender's WhatsApp ID
+            const senderWhatsAppId = message.from;
+            
+            // Send flow to the sender
+            try {
+              await sendWhatsAppFlow(senderWhatsAppId);
+              console.log(`✅ Flow sent to ${senderWhatsAppId}`);
+            } catch (error) {
+              console.error(`❌ Failed to send flow to ${senderWhatsAppId}:`, error);
+            }
+          });
+        }
+      }
+    });
+  });
 }
 
 // --- Request Handlers ---
@@ -597,6 +695,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'GET') {
+    // Webhook verification for WhatsApp
     const { query } = req;
     const mode = query['hub.mode'];
     const token = query['hub.verify_token'];
@@ -604,17 +703,32 @@ export default async function handler(req, res) {
     const verifyToken = process.env.VERIFY_TOKEN;
 
     if (mode === 'subscribe' && token === verifyToken && challenge) {
+      console.log('✅ WEBHOOK VERIFIED');
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send(challenge);
     } else {
+      console.log('❌ Webhook verification failed');
       return res.status(403).json({ error: 'Forbidden' });
     }
   }
 
   if (req.method === 'POST') {
-    try {
-      const requestBody = req.body;
+    const requestBody = req.body;
+    
+    // Check if this is a regular WhatsApp message (not encrypted flow data)
+    if (requestBody.object === 'whatsapp_business_account') {
+      console.log('📨 Incoming WhatsApp message webhook');
+      try {
+        await handleIncomingMessage(requestBody);
+        return res.status(200).json({ status: 'EVENT_RECEIVED' });
+      } catch (error) {
+        console.error('❌ Error handling incoming message:', error);
+        return res.status(500).json({ error: 'Failed to process message' });
+      }
+    }
 
+    // Handle encrypted flow data exchange
+    try {
       const privateKeyPem = process.env.PRIVATE_KEY;
       const privateKey = await importPrivateKey(privateKeyPem);
 
@@ -634,7 +748,7 @@ export default async function handler(req, res) {
       res.setHeader('Content-Type', 'application/json');
       return res.status(200).send(encryptedResponse);
     } catch (error) {
-      console.error('Error processing request:', error);
+      console.error('Error processing encrypted request:', error);
       return res.status(500).json({ error: `Internal Server Error: ${error.message}` });
     }
   }
