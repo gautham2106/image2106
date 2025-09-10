@@ -440,6 +440,8 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
 async function sendWhatsAppFlow(recipientWhatsAppId) {
   console.log('=== SENDING WHATSAPP FLOW ===');
   console.log('Recipient:', recipientWhatsAppId);
+  console.log('Using token:', WHATSAPP_TOKEN ? 'Token present' : 'TOKEN MISSING');
+  console.log('Using phone number ID:', WHATSAPP_PHONE_NUMBER_ID);
 
   const flowPayload = {
     recipient_type: "individual",
@@ -474,20 +476,27 @@ async function sendWhatsAppFlow(recipientWhatsAppId) {
     }
   };
 
+  console.log('Flow payload:', JSON.stringify(flowPayload, null, 2));
+
   try {
-    const response = await fetch(
-      `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(flowPayload)
-      }
-    );
+    const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    console.log('API URL:', url);
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(flowPayload)
+    });
+
+    console.log('Response status:', response.status);
+    console.log('Response headers:', JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
 
     const data = await response.json();
+    console.log('Response data:', JSON.stringify(data, null, 2));
+
     if (!response.ok) {
       throw new Error(`WhatsApp flow send failed ${response.status}: ${JSON.stringify(data)}`);
     }
@@ -496,6 +505,7 @@ async function sendWhatsAppFlow(recipientWhatsAppId) {
     return data;
   } catch (error) {
     console.error('❌ Error sending flow:', error);
+    console.error('Error details:', error.message);
     throw error;
   }
 }
@@ -673,6 +683,12 @@ async function handleErrorNotification(decryptedBody) {
 
 // --- Main Vercel API Handler ---
 export default async function handler(req, res) {
+  console.log('=== WEBHOOK HANDLER CALLED ===');
+  console.log('Method:', req.method);
+  console.log('URL:', req.url);
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  
   // Handle CORS
   if (req.method === 'OPTIONS') {
     res.status(200);
@@ -713,6 +729,10 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
+    console.log('=== POST REQUEST RECEIVED ===');
+    console.log('Body type:', typeof requestBody);
+    console.log('Body content:', JSON.stringify(requestBody, null, 2));
+    
     const requestBody = req.body;
     
     // Check if this is a regular WhatsApp message (not encrypted flow data)
