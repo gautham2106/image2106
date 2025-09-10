@@ -167,30 +167,27 @@ async function handleBspLead(req, res) {
     if (leadData.phoneNumber) {
       console.log('✅ LEAD CAPTURED SUCCESSFULLY');
       
-      // Store the lead data in database
-      const storedLead = await storeBspLead(leadData);
+      // Store the lead data in memory
+      const storedLead = storeBspLead(leadData);
       
-      if (storedLead) {
-        return res.status(200).json({
-          success: true,
-          message: 'Lead received and processed',
-          data: {
-            id: storedLead.id,
-            whatsapp_id: storedLead.whatsapp_id,
-            phone_number: storedLead.phone_number,
-            first_name: storedLead.first_name,
-            email: storedLead.email,
-            stored: true
-          },
-          timestamp: storedLead.created_at
-        });
-      } else {
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to store lead data',
-          data: leadData
-        });
-      }
+      // Optionally persist to database
+      await persistBspLead(storedLead);
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Lead received and processed',
+        data: {
+          id: storedLead.id,
+          phoneNumber: storedLead.phoneNumber,
+          firstName: storedLead.firstName,
+          email: storedLead.email,
+          chatId: storedLead.chatId,
+          subscriberId: storedLead.subscriberId,
+          userMessage: storedLead.userMessage,
+          stored: true
+        },
+        timestamp: storedLead.timestamp
+      });
 
     } else {
       console.log('❌ No phone number provided');
@@ -210,91 +207,44 @@ async function handleBspLead(req, res) {
   }
 }
 
-// Create personalized image caption using database lead info
-function createImageCaption(productCategory, priceOverlay, leadInfo) {
-  let caption = '';
-  
-  // Personalized greeting if we have lead info
-  if (leadInfo?.first_name && !leadInfo.first_name.includes('#')) {
-    caption += `Hi ${leadInfo.first_name}! `;
-  }
-  
-  // Product info
-  caption += `Here's your enhanced ${productCategory}`;
-  
-  // Price if provided
-  if (priceOverlay && priceOverlay.trim()) {
-    caption += ` — ${priceOverlay.trim()}`;
-  }
-  
-  caption += ' image! 🎨✨';
-  
-  return caption;
-}
-
 // --- Enhanced WhatsApp Phone Number Detection ---
 function getUserPhoneFromPayload(decryptedBody) {
   console.log('=== PHONE NUMBER DETECTION ===');
-  console.log('Decrypted body user data:', JSON.stringify(decryptedBody?.user, null, 2));
   
   // Method 1: Extract from WhatsApp Flow payload
   const flowCandidates = [
     decryptedBody?.user?.wa_id,
     decryptedBody?.user?.phone,
-    decryptedBody?.user?.phone_number,
     decryptedBody?.phone_number,
     decryptedBody?.mobile_number,
     decryptedBody?.data?.phone_number,
     decryptedBody?.data?.user_phone,
-    decryptedBody?.data?.mobile_number,
-    decryptedBody?.from,
-    decryptedBody?.user?.from
+    decryptedBody?.data?.mobile_number
   ];
 
-  const flowPhone = flowCandidates.find((v) => typeof v === 'string' && v.trim().length > 0 && !v.includes('#'));
+  const flowPhone = flowCandidates.find((v) => typeof v === 'string' && v.trim().length > 0);
   
   if (flowPhone) {
     const digits = flowPhone.replace(/\D/g, '');
-    if (digits && digits.length >= 10) {
+    if (digits) {
       const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
       console.log('📱 Phone from WhatsApp Flow:', normalizedPhone);
       return normalizedPhone;
     }
   }
 
-  // Method 2: Get from latest BSP lead (check for actual values, not placeholders)
+  // Method 2: Get from latest BSP lead
   const latestLead = getBspLead('latest');
-  console.log('Latest BSP lead:', JSON.stringify(latestLead, null, 2));
-  
-  if (latestLead?.phoneNumber && !latestLead.phoneNumber.includes('#')) {
+  if (latestLead?.phoneNumber) {
     const digits = latestLead.phoneNumber.replace(/\D/g, '');
-    if (digits && digits.length >= 10) {
+    if (digits) {
       const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
       console.log('📱 Phone from latest BSP lead:', normalizedPhone, `(${latestLead.firstName || 'Unknown'})`);
       return normalizedPhone;
     }
   }
 
-  // Method 3: Check chatId from BSP lead (since your payload shows chatId as the phone number)
-  if (latestLead?.chatId && !latestLead.chatId.includes('#')) {
-    const digits = latestLead.chatId.replace(/\D/g, '');
-    if (digits && digits.length >= 10) {
-      const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
-      console.log('📱 Phone from BSP chatId:', normalizedPhone, `(${latestLead.firstName || 'Unknown'})`);
-      return normalizedPhone;
-    }
-  }
-
-  console.log('❌ No valid phone number found in payload or BSP leads');
-  console.log('Available BSP leads:', {
-    latest: bspLeadStore.latest?.phoneNumber || 'none',
-    totalStored: bspLeadStore.byPhone.size,
-    recent: bspLeadStore.recent.slice(0, 3).map(lead => ({ 
-      phone: lead.phoneNumber, 
-      chatId: lead.chatId,
-      name: lead.firstName 
-    }))
-  });
+  console.log('❌ No phone number found in payload or BSP leads');
   return null;
 }
 
@@ -502,14 +452,13 @@ async function handleDataExchange(decryptedBody) {
     console.log('=== DATA EXCHANGE ACTION ===');
 
     if (data && typeof data === 'object') {
-      const { scene_description, price_overlay, product_image, product_category, user_phone } = data;
+      const { scene_description, price_overlay, product_image, product_category } = data;
 
       console.log('=== FIELD VALIDATION ===');
       console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
       console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
       console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
       console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
-      console.log('user_phone:', user_phone ? `"${user_phone}"` : 'not provided');
 
       if (!product_image) {
         return {
@@ -567,59 +516,56 @@ async function handleDataExchange(decryptedBody) {
       console.log('🚀 Proceeding to send job to processing function...');
       
       try {
-        // Extract phone number from BSP leads (like original code)
+        // Get user's phone number for context
         const userPhone = getUserPhoneFromPayload(decryptedBody);
         
-        // Immediately return success to WhatsApp Flow (avoid timeout)
-        const quickResponse = { 
+        // Forward to process-job function
+        const processingPayload = {
+          actualImageData,
+          productCategory: product_category.trim(),
+          sceneDescription: scene_description && scene_description.trim() ? scene_description.trim() : null,
+          priceOverlay: price_overlay && price_overlay.trim() ? price_overlay.trim() : null,
+          userPhone,
+          decryptedBody
+        };
+
+        console.log('📤 Sending to process-job function...');
+        console.log('🔍 Processing payload size:', JSON.stringify(processingPayload).length);
+        
+        // Non-blocking call to processing function
+        const vercelUrl = 'https://image2106.vercel.app';
+        const startTime = Date.now();
+        
+        fetch(`${vercelUrl}/api/process-job`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(processingPayload)
+        }).then(response => {
+          const elapsed = Date.now() - startTime;
+          console.log(`✅ Process-job response received after ${elapsed}ms`);
+          console.log('✅ Response status:', response.status);
+          console.log('✅ Response ok:', response.ok);
+          console.log('✅ Response headers:', Object.fromEntries(response.headers.entries()));
+          return response.text();
+        }).then(data => {
+          console.log('✅ Process-job response data:', data.substring(0, 500));
+        }).catch(error => {
+          const elapsed = Date.now() - startTime;
+          console.error(`❌ Process-job failed after ${elapsed}ms:`, error.message);
+          console.error('❌ Error stack:', error.stack);
+        });
+        
+        console.log('🎯 Continuing with immediate flow response...');
+
+        // Immediately return success to WhatsApp Flow
+        return { 
           screen: 'SUCCESS_SCREEN', 
           data: { 
             message: 'Your image is being processed and will be sent to you shortly!' 
           } 
         };
-        
-        // Send the response immediately
-        setTimeout(async () => {
-          try {
-            console.log('🚀 Starting background image generation...');
-            
-            // Do the long image generation in background (like original code)
-            const imageUrl = await generateImageFromAi(
-              actualImageData,
-              productCategory.trim(),
-              sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
-              priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
-            );
-            
-            console.log('✅ Image generation successful:', imageUrl);
-
-            // Send to user if phone number is available (like original code)
-            if (userPhone) {
-              const leadInfo = getBspLead(userPhone) || getBspLead('latest');
-              const caption = createImageCaption(productCategory.trim(), priceOverlay, leadInfo);
-              
-              console.log('📤 Sending WhatsApp image to:', userPhone);
-              console.log('📝 Caption:', caption);
-              
-              try {
-                const waResp = await sendWhatsAppImageMessage(userPhone, imageUrl, caption);
-                console.log('✅ WhatsApp image sent successfully:', JSON.stringify(waResp));
-              } catch (sendErr) {
-                console.error('❌ Failed to send WhatsApp image:', sendErr);
-              }
-            } else {
-              console.warn('⚠️ No phone number found; image generated but not sent');
-            }
-            
-          } catch (error) {
-            console.error('❌ Background image processing failed:', error);
-          }
-        }, 100); // Small delay to ensure response is sent first
-        
-        return quickResponse;
-        
       } catch (e) {
-        console.error('❌ Failed to start processing:', e);
+        console.error('❌ Failed to forward to processing function:', e);
         return {
           screen: 'COLLECT_IMAGE_SCENE',
           data: { error_message: `Processing failed: ${e.message}. Please try again.` }
