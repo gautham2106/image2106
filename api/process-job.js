@@ -10,12 +10,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
 };
 // PING endpoint to keep function warm
-if (req.method === 'GET') {
-  return res.status(200).json({
-    status: 'alive',
-    timestamp: new Date().toISOString()
-  });
-}
+
 
 // WhatsApp API config
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
@@ -342,6 +337,14 @@ export default async function handler(req, res) {
   Object.entries(corsHeaders).forEach(([key, value]) => {
     res.setHeader(key, value);
   });
+
+  // PING endpoint to keep function warm
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      status: 'alive',
+      timestamp: new Date().toISOString()
+    });
+  }
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
