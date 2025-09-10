@@ -248,80 +248,6 @@ function getUserPhoneFromPayload(decryptedBody) {
   return null;
 }
 
-// --- Enhanced Image Generation with BSP Integration ---
-async function generateImageAndSendToUser(decryptedBody, actualImageData, productCategory, sceneDescription, priceOverlay) {
-  console.log('🚀 Starting image generation and user notification...');
-  
-  try {
-    // Generate the image
-    const imageUrl = await generateImageFromAi(
-      actualImageData,
-      productCategory.trim(),
-      sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
-      priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
-    );
-    
-    console.log('✅ Image generation successful:', imageUrl);
-
-    // Get user's phone number (from Flow payload or BSP lead)
-    const toPhone = getUserPhoneFromPayload(decryptedBody);
-    
-    if (!toPhone) {
-      console.warn('⚠️ Phone number not found; cannot send WhatsApp message');
-      console.log('Available BSP leads:', {
-        latest: bspLeadStore.latest?.phoneNumber || 'none',
-        totalStored: bspLeadStore.byPhone.size,
-        recent: bspLeadStore.recent.slice(0, 3).map(lead => ({ 
-          phone: lead.phoneNumber, 
-          name: lead.firstName 
-        }))
-      });
-    } else {
-      // Get lead info for personalized message
-      const leadInfo = getBspLead(toPhone) || getBspLead('latest');
-      
-      const caption = createImageCaption(productCategory, priceOverlay, leadInfo);
-      
-      console.log('📤 Sending WhatsApp image to:', toPhone);
-      console.log('📝 Caption:', caption);
-      
-      try {
-        const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
-        console.log('✅ WhatsApp image sent successfully:', JSON.stringify(waResp));
-      } catch (sendErr) {
-        console.error('❌ Failed to send WhatsApp image:', sendErr);
-      }
-    }
-
-    return imageUrl;
-  } catch (error) {
-    console.error('❌ Image generation or sending failed:', error);
-    throw error;
-  }
-}
-
-// Create personalized image caption
-function createImageCaption(productCategory, priceOverlay, leadInfo) {
-  let caption = '';
-  
-  // Personalized greeting if we have lead info
-  if (leadInfo?.firstName) {
-    caption += `Hi ${leadInfo.firstName}! `;
-  }
-  
-  // Product info
-  caption += `Here's your enhanced ${productCategory}`;
-  
-  // Price if provided
-  if (priceOverlay && priceOverlay.trim()) {
-    caption += ` — ${priceOverlay.trim()}`;
-  }
-  
-  caption += ' image! 🎨✨';
-  
-  return caption;
-}
-
 // --- Utility Functions ---
 function validateEnvironmentVars() {
   const requiredVars = [
@@ -512,213 +438,6 @@ async function decryptWhatsAppImage(imageData) {
   }
 }
 
-// Upload to Supabase Storage via S3-compatible API (SigV4)
-async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const s3Endpoint = process.env.SUPABASE_S3_ENDPOINT; // e.g. https://<ref>.storage.supabase.co/storage/v1/s3
-  const s3Region = process.env.SUPABASE_S3_REGION || 'us-east-1';
-  const accessKeyId = process.env.SUPABASE_S3_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.SUPABASE_S3_SECRET_ACCESS_KEY;
-  const bucket = process.env.SUPABASE_S3_BUCKET || 'generated-images';
-
-  if (!supabaseUrl || !s3Endpoint || !accessKeyId || !secretAccessKey) {
-    throw new Error('Missing SUPABASE_URL, SUPABASE_S3_ENDPOINT, or S3 credentials');
-  }
-
-  const buffer = Buffer.from(base64Data, 'base64');
-  const ext = (mimeType && mimeType.split('/')[1]) || 'jpg';
-  const filename = `generated-${Date.now()}.${ext}`;
-
-  const s3 = new S3Client({
-    region: s3Region,
-    endpoint: s3Endpoint,
-    credentials: { accessKeyId, secretAccessKey },
-    forcePathStyle: true
-  });
-
-  await s3.send(new PutObjectCommand({
-    Bucket: bucket,
-    Key: filename,
-    Body: buffer,
-    ContentType: mimeType || 'image/jpeg'
-  }));
-
-  const baseUrl = supabaseUrl.replace(/\/+$/, '');
-  const publicUrl = `${baseUrl}/storage/v1/object/public/${encodeURIComponent(bucket)}/${encodeURIComponent(filename)}`;
-  console.log('Generated image uploaded (S3):', publicUrl);
-  return publicUrl;
-}
-
-// Simple prompt creation function
-function createSimplePrompt(productCategory, sceneDescription = null, priceOverlay = null) {
-  let prompt = `Create a professional product photo of this ${productCategory}.`;
-  
-  if (sceneDescription && sceneDescription.trim()) {
-    prompt += ` Show it in this setting: ${sceneDescription}.`;
-  } else {
-    prompt += ` Use a clean, professional background that complements the product.`;
-  }
-  
-  if (priceOverlay && priceOverlay.trim()) {
-    prompt += ` Include the price "${priceOverlay}" as a stylish overlay on the image.`;
-  }
-  
-  prompt += ` Make it look like a high-quality commercial product photo suitable for marketing and sales.`;
-  
-  return prompt;
-}
-
-// Simplified Gemini API call
-async function generateImageFromAi(productImageBase64, productCategory, sceneDescription = null, priceOverlay = null) {
-  console.log('=== GENERATE IMAGE FROM AI ===');
-  console.log('Parameters:');
-  console.log('- productImageBase64 length:', productImageBase64 ? productImageBase64.length : 0);
-  console.log('- productCategory:', productCategory || 'MISSING');
-  console.log('- sceneDescription:', sceneDescription || 'not provided');
-  console.log('- priceOverlay:', priceOverlay || 'not provided');
-  
-  if (!productImageBase64 || typeof productImageBase64 !== 'string') {
-    throw new Error("Product image data is missing or invalid");
-  }
-  
-  if (!productCategory || typeof productCategory !== 'string') {
-    throw new Error("Product category is required");
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY environment variable");
-  }
-
-  console.log("Step 1: Cleaning base64 data...");
-  
-  let cleanBase64 = productImageBase64;
-  if (productImageBase64.startsWith('data:')) {
-    const base64Index = productImageBase64.indexOf(',');
-    if (base64Index !== -1) {
-      cleanBase64 = productImageBase64.substring(base64Index + 1);
-      console.log("✅ Data URL prefix removed, new length:", cleanBase64.length);
-    }
-  }
-
-  console.log("Step 2: Creating simple prompt...");
-  
-  const simplePrompt = createSimplePrompt(productCategory, sceneDescription, priceOverlay);
-  console.log("Simple prompt:", simplePrompt);
-
-  console.log("Step 3: Sending to Gemini API...");
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
-
-  const requestBody = {
-    contents: [
-      {
-        parts: [
-          { text: simplePrompt },
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: cleanBase64
-            }
-          }
-        ]
-      }
-    ],
-    generationConfig: {
-      temperature: 0.8,
-      maxOutputTokens: 1024,
-      topP: 0.9,
-      topK: 40
-    }
-  };
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody)
-    });
-
-    console.log("Response status:", response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini API error response:", errorText);
-      throw new Error(`Gemini API failed (${response.status}): ${errorText}`);
-    }
-
-    const responseData = await response.json();
-    console.log("✅ Gemini API response received");
-
-    const candidate = responseData?.candidates?.[0];
-    if (!candidate?.content?.parts) {
-      throw new Error("No response parts found in Gemini API response");
-    }
-
-    console.log("Step 4: Processing generated image...");
-
-    for (const part of candidate.content.parts) {
-      if (part.inlineData) {
-        const generatedMimeType = part.inlineData.mimeType;
-        const generatedBase64 = part.inlineData.data;
-        console.log("✅ Image generated successfully");
-        
-        console.log("Step 5: Uploading generated image to Supabase (S3)...");
-        try {
-          const publicUrl = await uploadGeneratedImageToSupabase(generatedBase64, generatedMimeType);
-          console.log("✅ Generated image uploaded to Supabase:", publicUrl);
-          return publicUrl;
-        } catch (uploadError) {
-          console.error("Failed to upload generated image:", uploadError);
-          console.log("⚠️ Fallback: returning base64 data URL");
-          return `data:${generatedMimeType};base64,${generatedBase64}`;
-        }
-      }
-    }
-
-    const textPart = candidate.content.parts.find((p) => p.text);
-    if (textPart) {
-      throw new Error(`Model returned text instead of image: ${textPart.text}`);
-    }
-
-    throw new Error("No image data found in Gemini API response");
-  } catch (error) {
-    console.error('❌ Error in generateImageFromAi:', error);
-    throw error;
-  }
-}
-
-async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
-  if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
-  if (!imageUrl) throw new Error('Missing image URL');
-
-  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: toE164,
-      type: 'image',
-      image: {
-        link: imageUrl,
-        caption: caption || ''
-      }
-    })
-  });
-
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(`WhatsApp send failed ${resp.status}: ${JSON.stringify(data)}`);
-  }
-  return data;
-}
-
 // --- Request Handlers ---
 async function handleDataExchange(decryptedBody) {
   const { action, screen, data } = decryptedBody;
@@ -739,4 +458,246 @@ async function handleDataExchange(decryptedBody) {
       console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
       console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
       console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
-      console.log('price_overlay
+      console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
+
+      if (!product_image) {
+        return {
+          screen: 'COLLECT_IMAGE_SCENE',
+          data: { error_message: "Product image is required. Please upload an image of your product." }
+        };
+      }
+
+      if (!product_category || !product_category.trim()) {
+        return {
+          screen: 'COLLECT_INFO',
+          data: { error_message: "Product category is required. Please specify what type of product this is." }
+        };
+      }
+
+      let actualImageData;
+      try {
+        console.log('=== IMAGE PROCESSING ===');
+        
+        if (Array.isArray(product_image) && product_image.length > 0) {
+          console.log('Processing WhatsApp image array');
+          const firstImage = product_image[0];
+          
+          if (firstImage.encryption_metadata) {
+            console.log('Decrypting WhatsApp encrypted image...');
+            actualImageData = await decryptWhatsAppImage(firstImage);
+          } else if (firstImage.cdn_url) {
+            console.log('Fetching unencrypted image from CDN...');
+            const response = await fetch(firstImage.cdn_url);
+            if (!response.ok) {
+              throw new Error(`Failed to fetch image: ${response.status}`);
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            actualImageData = Buffer.from(arrayBuffer).toString('base64');
+          } else {
+            throw new Error('Invalid image format: no cdn_url or encryption_metadata found');
+          }
+        } else if (typeof product_image === 'string') {
+          console.log('Processing direct base64 string...');
+          actualImageData = product_image;
+        } else {
+          throw new Error('Invalid product_image format: expected array or string');
+        }
+        
+        console.log('✅ Image processing successful');
+        
+      } catch (imageError) {
+        console.error('❌ Image processing failed:', imageError);
+        return {
+          screen: 'COLLECT_IMAGE_SCENE',
+          data: { error_message: `Failed to process image: ${imageError.message}. Please try uploading the image again.` }
+        };
+      }
+
+      console.log('🚀 Proceeding to send job to processing function...');
+      
+      try {
+        // Get user's phone number for context
+        const userPhone = getUserPhoneFromPayload(decryptedBody);
+        
+        // Forward to process-job function
+        const processingPayload = {
+          actualImageData,
+          productCategory: product_category.trim(),
+          sceneDescription: scene_description && scene_description.trim() ? scene_description.trim() : null,
+          priceOverlay: price_overlay && price_overlay.trim() ? price_overlay.trim() : null,
+          userPhone,
+          decryptedBody
+        };
+
+        console.log('📤 Sending to process-job function...');
+        
+        // Non-blocking call to processing function
+        const vercelUrl = process.env.VERCEL_URL || 'http://localhost:3000';
+        fetch(`${vercelUrl}/api/process-job`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(processingPayload)
+        }).catch(error => {
+          console.error('❌ Failed to send to process-job:', error);
+        });
+
+        // Immediately return success to WhatsApp Flow
+        return { 
+          screen: 'SUCCESS_SCREEN', 
+          data: { 
+            message: 'Your image is being processed and will be sent to you shortly!' 
+          } 
+        };
+      } catch (e) {
+        console.error('❌ Failed to forward to processing function:', e);
+        return {
+          screen: 'COLLECT_IMAGE_SCENE',
+          data: { error_message: `Processing failed: ${e.message}. Please try again.` }
+        };
+      }
+    } else {
+      return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
+    }
+  }
+
+  if (action === 'BACK') {
+    if (screen === 'COLLECT_IMAGE_SCENE') {
+      return { screen: 'COLLECT_INFO', data: {} };
+    }
+    return { screen: 'COLLECT_INFO', data: {} };
+  }
+
+  console.log(`Unhandled action/screen combination: ${action}/${screen}`);
+  return { screen: 'COLLECT_INFO', data: { error_message: 'An unexpected error occurred.' } };
+}
+
+async function handleHealthCheck() {
+  return { data: { status: 'active' } };
+}
+
+async function handleErrorNotification(decryptedBody) {
+  console.log('Error notification received:', decryptedBody);
+  return { data: { acknowledged: true } };
+}
+
+// --- Debug endpoint to check BSP lead storage ---
+async function handleDebugLeads(req, res) {
+  console.log('=== DEBUG LEADS ENDPOINT ===');
+  
+  const debugInfo = {
+    latest: bspLeadStore.latest,
+    totalStored: bspLeadStore.byPhone.size,
+    recentCount: bspLeadStore.recent.length,
+    phoneNumbers: Array.from(bspLeadStore.byPhone.keys()),
+    recentLeads: bspLeadStore.recent.slice(0, 5).map(lead => ({
+      phone: lead.phoneNumber,
+      name: lead.firstName,
+      timestamp: lead.timestamp,
+      id: lead.id
+    })),
+    sessionMappings: Array.from(bspLeadStore.bySession.entries())
+  };
+  
+  console.log('Debug info:', JSON.stringify(debugInfo, null, 2));
+  
+  return res.status(200).json({
+    success: true,
+    message: 'BSP Lead Storage Debug Info',
+    data: debugInfo,
+    timestamp: new Date().toISOString()
+  });
+}
+
+// --- Main Vercel API Handler ---
+export default async function handler(req, res) {
+  // Handle CORS
+  if (req.method === 'OPTIONS') {
+    res.status(200);
+    Object.entries(corsHeaders).forEach(([key, value]) => {
+      res.setHeader(key, value);
+    });
+    return res.end();
+  }
+
+  // Set CORS headers for all responses
+  Object.entries(corsHeaders).forEach(([key, value]) => {
+    res.setHeader(key, value);
+  });
+
+  // DEBUG ENDPOINT: Check BSP lead storage
+  if (req.method === 'GET' && req.url?.includes('/debug-leads')) {
+    return handleDebugLeads(req, res);
+  }
+
+  // FIRST: Check if this is a BSP lead webhook (before any WhatsApp Flow processing)
+  if (req.method === 'POST' && req.body) {
+    // BSP structure check: has phoneNumber/firstName/email/chat_id/first_name but no WhatsApp Flow encryption
+    const isBspLead = req.body.phoneNumber !== undefined || 
+                     req.body.firstName !== undefined || 
+                     req.body.email !== undefined ||
+                     req.body.chat_id !== undefined ||
+                     req.body.first_name !== undefined;
+    
+    const isWhatsAppFlow = req.body.encrypted_aes_key !== undefined || 
+                          req.body.encrypted_flow_data !== undefined || 
+                          req.body.initial_vector !== undefined;
+    
+    if (isBspLead && !isWhatsAppFlow) {
+      console.log('🔄 Processing BSP lead webhook');
+      return handleBspLead(req, res);
+    }
+  }
+
+  // Continue with existing WhatsApp Flow logic
+  try {
+    validateEnvironmentVars();
+  } catch (error) {
+    console.error('Environment validation failed:', error.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+
+  if (req.method === 'GET') {
+    const { query } = req;
+    const mode = query['hub.mode'];
+    const token = query['hub.verify_token'];
+    const challenge = query['hub.challenge'];
+    const verifyToken = process.env.VERIFY_TOKEN;
+
+    if (mode === 'subscribe' && token === verifyToken && challenge) {
+      res.setHeader('Content-Type', 'text/plain');
+      return res.status(200).send(challenge);
+    } else {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  }
+
+  if (req.method === 'POST') {
+    try {
+      const requestBody = req.body;
+
+      const privateKeyPem = process.env.PRIVATE_KEY;
+      const privateKey = await importPrivateKey(privateKeyPem);
+
+      const { decryptedBody, aesKeyBuffer, initialVectorBuffer } = await decryptRequest(requestBody, privateKey);
+
+      let responsePayload;
+      if (decryptedBody.action === 'ping') {
+        responsePayload = await handleHealthCheck();
+      } else if (decryptedBody.action === 'error_notification') {
+        responsePayload = await handleErrorNotification(decryptedBody);
+      } else {
+        responsePayload = await handleDataExchange(decryptedBody);
+      }
+
+      const encryptedResponse = await encryptResponse(responsePayload, aesKeyBuffer, initialVectorBuffer);
+
+      res.setHeader('Content-Type', 'application/json');
+      return res.status(200).send(encryptedResponse);
+    } catch (error) {
+      console.error('Error processing request:', error);
+      return res.status(500).json({ error: `Internal Server Error: ${error.message}` });
+    }
+  }
+
+  return res.status(405).json({ error: 'Method Not Allowed' });
+}
