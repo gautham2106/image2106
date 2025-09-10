@@ -167,27 +167,30 @@ async function handleBspLead(req, res) {
     if (leadData.phoneNumber) {
       console.log('✅ LEAD CAPTURED SUCCESSFULLY');
       
-      // Store the lead data in memory
-      const storedLead = storeBspLead(leadData);
+      // Store the lead data in database
+      const storedLead = await storeBspLead(leadData);
       
-      // Optionally persist to database
-      await persistBspLead(storedLead);
-      
-      return res.status(200).json({
-        success: true,
-        message: 'Lead received and processed',
-        data: {
-          id: storedLead.id,
-          phoneNumber: storedLead.phoneNumber,
-          firstName: storedLead.firstName,
-          email: storedLead.email,
-          chatId: storedLead.chatId,
-          subscriberId: storedLead.subscriberId,
-          userMessage: storedLead.userMessage,
-          stored: true
-        },
-        timestamp: storedLead.timestamp
-      });
+      if (storedLead) {
+        return res.status(200).json({
+          success: true,
+          message: 'Lead received and processed',
+          data: {
+            id: storedLead.id,
+            whatsapp_id: storedLead.whatsapp_id,
+            phone_number: storedLead.phone_number,
+            first_name: storedLead.first_name,
+            email: storedLead.email,
+            stored: true
+          },
+          timestamp: storedLead.created_at
+        });
+      } else {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to store lead data',
+          data: leadData
+        });
+      }
 
     } else {
       console.log('❌ No phone number provided');
@@ -205,6 +208,28 @@ async function handleBspLead(req, res) {
       message: error.message 
     });
   }
+}
+
+// Create personalized image caption using database lead info
+function createImageCaption(productCategory, priceOverlay, leadInfo) {
+  let caption = '';
+  
+  // Personalized greeting if we have lead info
+  if (leadInfo?.first_name && !leadInfo.first_name.includes('#')) {
+    caption += `Hi ${leadInfo.first_name}! `;
+  }
+  
+  // Product info
+  caption += `Here's your enhanced ${productCategory}`;
+  
+  // Price if provided
+  if (priceOverlay && priceOverlay.trim()) {
+    caption += ` — ${priceOverlay.trim()}`;
+  }
+  
+  caption += ' image! 🎨✨';
+  
+  return caption;
 }
 
 // --- Enhanced WhatsApp Phone Number Detection ---
@@ -542,58 +567,59 @@ async function handleDataExchange(decryptedBody) {
       console.log('🚀 Proceeding to send job to processing function...');
       
       try {
-        // Use phone from flow data first, fallback to BSP detection
-        const userPhone = user_phone || getUserPhoneFromPayload(decryptedBody);
+        // Extract phone number from BSP leads (like original code)
+        const userPhone = getUserPhoneFromPayload(decryptedBody);
         
-        // Forward to process-job function
-        const processingPayload = {
-          actualImageData,
-          productCategory: product_category.trim(),
-          sceneDescription: scene_description && scene_description.trim() ? scene_description.trim() : null,
-          priceOverlay: price_overlay && price_overlay.trim() ? price_overlay.trim() : null,
-          userPhone, // Use phone from flow data or BSP fallback
-          // Also pass BSP lead info for personalized messages
-          leadInfo: getBspLead(userPhone) || getBspLead('latest'),
-          decryptedBody
-        };
-
-        console.log('📤 Sending to process-job function...');
-        console.log('🔍 Processing payload size:', JSON.stringify(processingPayload).length);
-        
-        // Non-blocking call to processing function
-        const vercelUrl = 'https://image2106.vercel.app';
-        const startTime = Date.now();
-        
-        fetch(`${vercelUrl}/api/process-job`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(processingPayload)
-        }).then(response => {
-          const elapsed = Date.now() - startTime;
-          console.log(`✅ Process-job response received after ${elapsed}ms`);
-          console.log('✅ Response status:', response.status);
-          console.log('✅ Response ok:', response.ok);
-          console.log('✅ Response headers:', Object.fromEntries(response.headers.entries()));
-          return response.text();
-        }).then(data => {
-          console.log('✅ Process-job response data:', data.substring(0, 500));
-        }).catch(error => {
-          const elapsed = Date.now() - startTime;
-          console.error(`❌ Process-job failed after ${elapsed}ms:`, error.message);
-          console.error('❌ Error stack:', error.stack);
-        });
-        
-        console.log('🎯 Continuing with immediate flow response...');
-
-        // Immediately return success to WhatsApp Flow
-        return { 
+        // Immediately return success to WhatsApp Flow (avoid timeout)
+        const quickResponse = { 
           screen: 'SUCCESS_SCREEN', 
           data: { 
             message: 'Your image is being processed and will be sent to you shortly!' 
           } 
         };
+        
+        // Send the response immediately
+        setTimeout(async () => {
+          try {
+            console.log('🚀 Starting background image generation...');
+            
+            // Do the long image generation in background (like original code)
+            const imageUrl = await generateImageFromAi(
+              actualImageData,
+              productCategory.trim(),
+              sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
+              priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
+            );
+            
+            console.log('✅ Image generation successful:', imageUrl);
+
+            // Send to user if phone number is available (like original code)
+            if (userPhone) {
+              const leadInfo = getBspLead(userPhone) || getBspLead('latest');
+              const caption = createImageCaption(productCategory.trim(), priceOverlay, leadInfo);
+              
+              console.log('📤 Sending WhatsApp image to:', userPhone);
+              console.log('📝 Caption:', caption);
+              
+              try {
+                const waResp = await sendWhatsAppImageMessage(userPhone, imageUrl, caption);
+                console.log('✅ WhatsApp image sent successfully:', JSON.stringify(waResp));
+              } catch (sendErr) {
+                console.error('❌ Failed to send WhatsApp image:', sendErr);
+              }
+            } else {
+              console.warn('⚠️ No phone number found; image generated but not sent');
+            }
+            
+          } catch (error) {
+            console.error('❌ Background image processing failed:', error);
+          }
+        }, 100); // Small delay to ensure response is sent first
+        
+        return quickResponse;
+        
       } catch (e) {
-        console.error('❌ Failed to forward to processing function:', e);
+        console.error('❌ Failed to start processing:', e);
         return {
           screen: 'COLLECT_IMAGE_SCENE',
           data: { error_message: `Processing failed: ${e.message}. Please try again.` }
