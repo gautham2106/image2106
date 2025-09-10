@@ -708,16 +708,33 @@ export default async function handler(req, res) {
     res.setHeader(key, value);
   });
 
-  // NEW: Route to simple BSP webhook if it's a plain phone number payload
-  // Check if this is a simple BSP webhook (has phoneNumber but no encryption fields)
+  // FIRST: Check if this is a simple BSP webhook (before any other processing)
   if (req.method === 'POST' && req.body) {
-    // Check if this looks like a BSP webhook (has common BSP fields but no WhatsApp encryption)
-    const hasBspFields = req.body.phoneNumber || req.body.phone || req.body.number || 
-                        req.body.firstName || req.body.email || req.body.verifyToken;
-    const hasWhatsAppEncryption = req.body.encrypted_aes_key || req.body.encrypted_flow_data || req.body.initial_vector;
+    console.log('🔍 Checking request type...');
+    console.log('Request body keys:', Object.keys(req.body));
     
-    if (hasBspFields && !hasWhatsAppEncryption) {
+    // Check for WhatsApp Flow encryption fields
+    const hasWhatsAppEncryption = !!(req.body.encrypted_aes_key || req.body.encrypted_flow_data || req.body.initial_vector);
+    
+    // Check for BSP fields
+    const hasBspFields = !!(req.body.phoneNumber || req.body.phone || req.body.number || 
+                           req.body.firstName || req.body.email || req.body.verifyToken);
+    
+    console.log('Has WhatsApp encryption:', hasWhatsAppEncryption);
+    console.log('Has BSP fields:', hasBspFields);
+    
+    // If no WhatsApp encryption AND has BSP-like fields, route to BSP handler
+    if (!hasWhatsAppEncryption && hasBspFields) {
       console.log('🔄 Routing to BSP phone number handler');
+      return handleSimpleWebhook(req, res);
+    }
+    
+    // If has WhatsApp encryption, continue to WhatsApp Flow handler
+    if (hasWhatsAppEncryption) {
+      console.log('🔄 Routing to WhatsApp Flow handler');
+      // Continue with WhatsApp Flow logic below
+    } else {
+      console.log('❓ Unknown request type, treating as BSP');
       return handleSimpleWebhook(req, res);
     }
   }
