@@ -699,12 +699,23 @@ export default async function handler(req, res) {
     const challenge = query['hub.challenge'];
     const verifyToken = process.env.VERIFY_TOKEN;
 
+    // WhatsApp webhook verification
     if (mode === 'subscribe' && token === verifyToken && challenge) {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send(challenge);
-    } else {
-      return res.status(403).json({ error: 'Forbidden' });
+    } 
+    
+    // Simple health check for BSP testing
+    if (!mode && !token && !challenge) {
+      return res.status(200).json({ 
+        status: 'Webhook is active',
+        endpoint: 'https://image2106.vercel.app/webhook',
+        methods: ['GET', 'POST'],
+        timestamp: new Date().toISOString()
+      });
     }
+    
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   if (req.method === 'POST') {
