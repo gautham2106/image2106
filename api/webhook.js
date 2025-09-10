@@ -102,6 +102,12 @@ async function handleSimpleWebhook(req, res) {
     const chatId = req.body?.chatId || '';
     const subscriberId = req.body?.subscriberId || '';
     
+    console.log('📋 Raw extracted values:');
+    console.log('  - phoneNumber field:', req.body?.phoneNumber);
+    console.log('  - phone field:', req.body?.phone);
+    console.log('  - number field:', req.body?.number);
+    console.log('  - final phoneNumber:', phoneNumber);
+    
     if (phoneNumber) {
       console.log('📞 Phone number received:', phoneNumber);
       console.log('👤 Additional data:');
