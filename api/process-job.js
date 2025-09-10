@@ -1,5 +1,4 @@
 // Vercel Node.js API Route for Processing Image Generation Jobs
-//This is new deploy
 // Place this file at: api/process-job.js
 
 import { createClient } from '@supabase/supabase-js';
@@ -277,11 +276,12 @@ async function processImageGeneration(jobData) {
       const caption = createImageCaption(
         jobData.productCategory, 
         jobData.priceOverlay, 
-        jobData.userPhone
+        jobData.leadInfo
       );
       
       console.log('📤 Sending WhatsApp image to:', jobData.userPhone);
       console.log('📝 Caption:', caption);
+      console.log('👤 Lead info:', JSON.stringify(jobData.leadInfo, null, 2));
       
       try {
         const waResp = await sendWhatsAppImageMessage(jobData.userPhone, imageUrl, caption);
