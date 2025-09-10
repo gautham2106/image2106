@@ -729,11 +729,11 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
+    const requestBody = req.body;
+    
     console.log('=== POST REQUEST RECEIVED ===');
     console.log('Body type:', typeof requestBody);
     console.log('Body content:', JSON.stringify(requestBody, null, 2));
-    
-    const requestBody = req.body;
     
     // Check if this is a regular WhatsApp message (not encrypted flow data)
     if (requestBody.object === 'whatsapp_business_account') {
