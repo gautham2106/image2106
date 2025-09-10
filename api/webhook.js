@@ -59,6 +59,33 @@ async function handleSimpleWebhook(req, res) {
     console.log('Body:', JSON.stringify(req.body, null, 2));
     console.log('Query:', JSON.stringify(req.query, null, 2));
     
+    // Verify token authentication
+    const expectedToken = process.env.BSP_WEBHOOK_TOKEN || 'mY-sUpEr-S3cr3t-wh4tsApp-T0k3n';
+    const authHeader = req.headers.authorization;
+    const tokenFromQuery = req.query.token;
+    const tokenFromBody = req.body?.verifyToken;
+    
+    let receivedToken = null;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      receivedToken = authHeader.replace('Bearer ', '');
+    } else if (tokenFromQuery) {
+      receivedToken = tokenFromQuery;
+    } else if (tokenFromBody) {
+      receivedToken = tokenFromBody;
+    }
+    
+    if (receivedToken !== expectedToken) {
+      console.log('❌ Token verification failed');
+      console.log('Expected:', expectedToken);
+      console.log('Received:', receivedToken);
+      return res.status(401).json({ 
+        error: 'Unauthorized',
+        message: 'Invalid or missing authentication token'
+      });
+    }
+    
+    console.log('✅ Token verification successful');
+    
     // Extract phone number from various possible field names
     const phoneNumber = 
       req.body?.phoneNumber || 
