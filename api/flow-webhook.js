@@ -530,16 +530,32 @@ async function handleDataExchange(decryptedBody) {
         };
 
         console.log('📤 Sending to process-job function...');
+        console.log('🔍 Processing payload size:', JSON.stringify(processingPayload).length);
         
         // Non-blocking call to processing function
         const vercelUrl = 'https://image2106.vercel.app';
+        const startTime = Date.now();
+        
         fetch(`${vercelUrl}/api/process-job`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(processingPayload)
+        }).then(response => {
+          const elapsed = Date.now() - startTime;
+          console.log(`✅ Process-job response received after ${elapsed}ms`);
+          console.log('✅ Response status:', response.status);
+          console.log('✅ Response ok:', response.ok);
+          console.log('✅ Response headers:', Object.fromEntries(response.headers.entries()));
+          return response.text();
+        }).then(data => {
+          console.log('✅ Process-job response data:', data.substring(0, 500));
         }).catch(error => {
-          console.error('❌ Failed to send to process-job:', error);
+          const elapsed = Date.now() - startTime;
+          console.error(`❌ Process-job failed after ${elapsed}ms:`, error.message);
+          console.error('❌ Error stack:', error.stack);
         });
+        
+        console.log('🎯 Continuing with immediate flow response...');
 
         // Immediately return success to WhatsApp Flow
         return { 
