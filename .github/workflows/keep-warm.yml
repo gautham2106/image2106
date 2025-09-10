@@ -1,11 +1,1 @@
-name: Keep Vercel Warm
-on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:  # This adds manual trigger
-jobs:
-  ping:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Ping Vercel function
-        run: curl -s https://image2106.vercel.app/api/process-job
+
