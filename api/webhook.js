@@ -1,4 +1,4 @@
-// Vercel Node.js API Route for WhatsApp Flow with Gemini API + Webhook Listening
+// Vercel Node.js API Route for WhatsApp Flow with Gemini API + BSP Phone Storage
 // Place this file at: api/webhook.js
 
 import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
@@ -48,6 +48,92 @@ async function importPrivateKey(privateKeyPem) {
     name: "RSA-OAEP",
     hash: "SHA-256"
   }, false, ["decrypt"]);
+}
+
+// --- BSP Phone Number Storage Handler ---
+async function handleSimpleWebhook(req, res) {
+  try {
+    console.log('=== BSP PHONE NUMBER WEBHOOK ===');
+    console.log('Method:', req.method);
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    console.log('Query:', JSON.stringify(req.query, null, 2));
+    
+    // Extract phone number from various possible field names
+    const phoneNumber = 
+      req.body?.phoneNumber || 
+      req.body?.phone || 
+      req.body?.number ||
+      req.body?.from ||
+      req.body?.wa_id ||
+      req.body?.contact ||
+      req.query?.number;
+    
+    // Extract additional fields if present
+    const firstName = req.body?.firstName || req.body?.name || '';
+    const email = req.body?.email || '';
+    const chatId = req.body?.chatId || '';
+    const subscriberId = req.body?.subscriberId || '';
+    
+    if (phoneNumber) {
+      console.log('📞 Phone number received:', phoneNumber);
+      console.log('👤 Additional data:');
+      console.log('  - First Name:', firstName || 'not provided');
+      console.log('  - Email:', email || 'not provided');
+      console.log('  - Chat ID:', chatId || 'not provided');
+      console.log('  - Subscriber ID:', subscriberId || 'not provided');
+      
+      // TODO: Add your storage logic here
+      // Examples:
+      
+      // 1. Save to Supabase database
+      // const { createClient } = require('@supabase/supabase-js');
+      // const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+      // await supabase.from('contacts').insert({
+      //   phone_number: phoneNumber,
+      //   first_name: firstName,
+      //   email: email,
+      //   chat_id: chatId,
+      //   subscriber_id: subscriberId,
+      //   created_at: new Date().toISOString()
+      // });
+      
+      // 2. Save to Google Sheets (if you have Google Sheets API setup)
+      // await appendToGoogleSheet([phoneNumber, firstName, email, new Date().toISOString()]);
+      
+      // 3. Send to another API
+      // await fetch('https://your-crm-api.com/contacts', {
+      //   method: 'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify({ phone: phoneNumber, name: firstName, email })
+      // });
+      
+      // 4. Simple logging for now
+      console.log('✅ Phone number logged successfully');
+      console.log('💾 Ready for storage implementation');
+      
+    } else {
+      console.log('❌ No phone number found in payload');
+      console.log('Available fields:', Object.keys(req.body || {}));
+    }
+    
+    // Always return 200 to acknowledge receipt (important for BSP)
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Phone number received and processed',
+      phoneNumber: phoneNumber || null,
+      timestamp: new Date().toISOString(),
+      receivedFields: Object.keys(req.body || {})
+    });
+    
+  } catch (error) {
+    console.error('❌ BSP webhook error:', error);
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 }
 
 // --- Encryption/Decryption Functions ---
@@ -383,6 +469,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 }
 
 // --- WhatsApp helpers ---
+// Replace your current getUserPhoneFromPayload with this
 function getUserPhoneFromPayload(decryptedBody) {
   const candidates = [
     decryptedBody?.user?.wa_id,
@@ -434,119 +521,6 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
     throw new Error(`WhatsApp send failed ${resp.status}: ${JSON.stringify(data)}`);
   }
   return data;
-}
-
-// NEW: Function to send WhatsApp Flow
-async function sendWhatsAppFlow(recipientWhatsAppId) {
-  console.log('=== SENDING WHATSAPP FLOW ===');
-  console.log('Recipient:', recipientWhatsAppId);
-  console.log('Using token:', WHATSAPP_TOKEN ? 'Token present' : 'TOKEN MISSING');
-  console.log('Using phone number ID:', WHATSAPP_PHONE_NUMBER_ID);
-
-  const flowPayload = {
-    recipient_type: "individual",
-    messaging_product: "whatsapp",
-    to: recipientWhatsAppId,
-    type: "interactive",
-    interactive: {
-      type: "flow",
-      header: {
-        type: "text",
-        text: "🚀 AI Product Photo Generator"
-      },
-      body: {
-        text: "Transform your product photos with AI! Upload your product image and let our AI create stunning marketing photos."
-      },
-      footer: {
-        text: "Powered by AI Magic ✨"
-      },
-      action: {
-        name: "flow",
-        parameters: {
-          flow_message_version: "3",
-          flow_token: "flows-builder-ba2d3f77",
-          flow_id: "24448880388065482",
-          flow_cta: "Start Creating",
-          flow_action: "navigate",
-          flow_action_payload: {
-            screen: "COLLECT_INFO"
-          }
-        }
-      }
-    }
-  };
-
-  console.log('Flow payload:', JSON.stringify(flowPayload, null, 2));
-
-  try {
-    const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-    console.log('API URL:', url);
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(flowPayload)
-    });
-
-    console.log('Response status:', response.status);
-    console.log('Response headers:', JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
-
-    const data = await response.json();
-    console.log('Response data:', JSON.stringify(data, null, 2));
-
-    if (!response.ok) {
-      throw new Error(`WhatsApp flow send failed ${response.status}: ${JSON.stringify(data)}`);
-    }
-
-    console.log('✅ Flow sent successfully:', data);
-    return data;
-  } catch (error) {
-    console.error('❌ Error sending flow:', error);
-    console.error('Error details:', error.message);
-    throw error;
-  }
-}
-
-// NEW: Handle incoming WhatsApp messages
-async function handleIncomingMessage(body) {
-  console.log('=== HANDLING INCOMING MESSAGE ===');
-  
-  if (body.object !== 'whatsapp_business_account') {
-    console.log('Not a WhatsApp message, ignoring');
-    return;
-  }
-
-  body.entry.forEach(entry => {
-    entry.changes.forEach(change => {
-      if (change.field === 'messages') {
-        const messages = change.value.messages;
-        
-        if (messages) {
-          messages.forEach(async (message) => {
-            console.log('📱 Message received:', JSON.stringify(message, null, 2));
-            
-            // Extract sender's WhatsApp ID
-            const senderWhatsAppId = message.from;
-            
-            // Send simple text first to test
-            try {
-              await sendSimpleTextMessage(senderWhatsAppId, "Hello! Your message was received. Let me send you the AI Photo Generator flow...");
-              console.log(`✅ Text message sent to ${senderWhatsAppId}`);
-              
-              // Then try to send the flow
-              await sendWhatsAppFlow(senderWhatsAppId);
-              console.log(`✅ Flow sent to ${senderWhatsAppId}`);
-            } catch (error) {
-              console.error(`❌ Failed to send messages to ${senderWhatsAppId}:`, error);
-            }
-          });
-        }
-      }
-    });
-  });
 }
 
 // --- Request Handlers ---
@@ -687,12 +661,6 @@ async function handleErrorNotification(decryptedBody) {
 
 // --- Main Vercel API Handler ---
 export default async function handler(req, res) {
-  console.log('=== WEBHOOK HANDLER CALLED ===');
-  console.log('Method:', req.method);
-  console.log('URL:', req.url);
-  console.log('Headers:', JSON.stringify(req.headers, null, 2));
-  console.log('Body:', JSON.stringify(req.body, null, 2));
-  
   // Handle CORS
   if (req.method === 'OPTIONS') {
     res.status(200);
@@ -707,6 +675,16 @@ export default async function handler(req, res) {
     res.setHeader(key, value);
   });
 
+  // NEW: Route to simple BSP webhook if it's a plain phone number payload
+  // Check if this is a simple BSP webhook (has phoneNumber but no encryption fields)
+  if (req.method === 'POST' && req.body && 
+      (req.body.phoneNumber || req.body.phone || req.body.number) && 
+      !req.body.encrypted_aes_key) {
+    console.log('🔄 Routing to BSP phone number handler');
+    return handleSimpleWebhook(req, res);
+  }
+
+  // Validate environment for WhatsApp Flow (only needed for encrypted flows)
   try {
     validateEnvironmentVars();
   } catch (error) {
@@ -715,7 +693,6 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'GET') {
-    // Webhook verification for WhatsApp
     const { query } = req;
     const mode = query['hub.mode'];
     const token = query['hub.verify_token'];
@@ -723,36 +700,17 @@ export default async function handler(req, res) {
     const verifyToken = process.env.VERIFY_TOKEN;
 
     if (mode === 'subscribe' && token === verifyToken && challenge) {
-      console.log('✅ WEBHOOK VERIFIED');
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send(challenge);
     } else {
-      console.log('❌ Webhook verification failed');
       return res.status(403).json({ error: 'Forbidden' });
     }
   }
 
   if (req.method === 'POST') {
-    const requestBody = req.body;
-    
-    console.log('=== POST REQUEST RECEIVED ===');
-    console.log('Body type:', typeof requestBody);
-    console.log('Body content:', JSON.stringify(requestBody, null, 2));
-    
-    // Check if this is a regular WhatsApp message (not encrypted flow data)
-    if (requestBody.object === 'whatsapp_business_account') {
-      console.log('📨 Incoming WhatsApp message webhook');
-      try {
-        await handleIncomingMessage(requestBody);
-        return res.status(200).json({ status: 'EVENT_RECEIVED' });
-      } catch (error) {
-        console.error('❌ Error handling incoming message:', error);
-        return res.status(500).json({ error: 'Failed to process message' });
-      }
-    }
-
-    // Handle encrypted flow data exchange
     try {
+      const requestBody = req.body;
+
       const privateKeyPem = process.env.PRIVATE_KEY;
       const privateKey = await importPrivateKey(privateKeyPem);
 
@@ -772,7 +730,7 @@ export default async function handler(req, res) {
       res.setHeader('Content-Type', 'application/json');
       return res.status(200).send(encryptedResponse);
     } catch (error) {
-      console.error('Error processing encrypted request:', error);
+      console.error('Error processing request:', error);
       return res.status(500).json({ error: `Internal Server Error: ${error.message}` });
     }
   }
