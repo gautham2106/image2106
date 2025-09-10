@@ -794,27 +794,23 @@ async function handleDataExchange(decryptedBody) {
         };
       }
 
-      console.log('🚀 Proceeding with enhanced image generation and BSP integration...');
+      console.log('🚀 Starting async image processing...');
       
-      try {
-        // Use the enhanced function that includes BSP integration
-        const imageUrl = await generateImageAndSendToUser(
-          decryptedBody,
-          actualImageData,
-          product_category.trim(),
-          scene_description && scene_description.trim() ? scene_description.trim() : null,
-          price_overlay && price_overlay.trim() ? price_overlay.trim() : null
-        );
+      // Process image generation and sending asynchronously (fire and forget)
+      generateImageAndSendToUser(
+        decryptedBody,
+        actualImageData,
+        product_category.trim(),
+        scene_description && scene_description.trim() ? scene_description.trim() : null,
+        price_overlay && price_overlay.trim() ? price_overlay.trim() : null
+      ).then(imageUrl => {
+        console.log('✅ Async image processing completed:', imageUrl);
+      }).catch(error => {
+        console.error('❌ Async image processing failed:', error);
+      });
 
-        return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
-      } catch (e) {
-        console.error('❌ Image generation or sending failed:', e);
-        return {
-          screen: 'COLLECT_IMAGE_SCENE',
-          data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
-        };
-      }
-    } else {
+      // Return success screen immediately
+      return { screen: 'SUCCESS_SCREEN', data: { message: 'Processing your image...' } };    } else {
       return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
     }
   }
