@@ -1,4 +1,4 @@
-// Vercel Node.js API Route for WhatsApp Flow with Gemini AI + BSP Lead Capture
+// Vercel Node.js API Route for WhatsApp Flow with Gemini AI + Simple BSP Lead Capture
 // Place this file at: api/flow-webhook.js
 
 import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
@@ -16,193 +16,60 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
-// --- BSP Lead Storage ---
-// Simple in-memory storage for BSP leads (resets on server restart)
-const bspLeadStore = {
-  latest: null,           // Most recent lead
-  byPhone: new Map(),     // Map phone -> lead data
-  bySession: new Map(),   // Map session/chat_id -> phone
-  recent: []              // Array of recent leads (max 100)
-};
-
-// Store BSP lead data
-function storeBspLead(leadData) {
-  const phoneNumber = leadData.phoneNumber || leadData.chat_id;
-  const timestamp = new Date().toISOString();
-  
-  const enrichedLead = {
-    ...leadData,
-    phoneNumber,
-    timestamp,
-    id: `${phoneNumber}-${Date.now()}`
-  };
-  
-  // Store as latest
-  bspLeadStore.latest = enrichedLead;
-  
-  // Store by phone number
-  if (phoneNumber) {
-    bspLeadStore.byPhone.set(phoneNumber, enrichedLead);
-    
-    // Store session mapping
-    if (leadData.chatId || leadData.chat_id) {
-      bspLeadStore.bySession.set(leadData.chatId || leadData.chat_id, phoneNumber);
-    }
-  }
-  
-  // Add to recent leads (keep only last 100)
-  bspLeadStore.recent.unshift(enrichedLead);
-  if (bspLeadStore.recent.length > 100) {
-    bspLeadStore.recent = bspLeadStore.recent.slice(0, 100);
-  }
-  
-  console.log('📍 BSP Lead stored:', {
-    phone: phoneNumber,
-    name: leadData.firstName || leadData.first_name,
-    totalStored: bspLeadStore.byPhone.size,
-    recentCount: bspLeadStore.recent.length
-  });
-  
-  return enrichedLead;
+// --- Simple BSP Lead Storage ---
+// Initialize global BSP lead storage
+if (!global.latestBspLead) {
+  global.latestBspLead = null;
 }
 
-// Get BSP lead data
-function getBspLead(identifier = 'latest') {
-  if (identifier === 'latest') {
-    return bspLeadStore.latest;
-  }
-  
-  // Try to get by phone number
-  if (bspLeadStore.byPhone.has(identifier)) {
-    return bspLeadStore.byPhone.get(identifier);
-  }
-  
-  // Try to get by session/chat_id
-  if (bspLeadStore.bySession.has(identifier)) {
-    const phone = bspLeadStore.bySession.get(identifier);
-    return bspLeadStore.byPhone.get(phone);
-  }
-  
-  return null;
-}
-
-// Optional: Persist to database (implement based on your needs)
-async function persistBspLead(leadData) {
-  try {
-    // Example: Save to Supabase
-    // const { createClient } = require('@supabase/supabase-js');
-    // const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
-    // await supabase.from('bsp_leads').upsert({
-    //   phone_number: leadData.phoneNumber,
-    //   first_name: leadData.firstName || leadData.first_name,
-    //   email: leadData.email,
-    //   chat_id: leadData.chatId || leadData.chat_id,
-    //   subscriber_id: leadData.subscriberId,
-    //   user_message: leadData.userMessage || leadData.user_message,
-    //   postback_id: leadData.postbackId || leadData.postbackid,
-    //   created_at: leadData.timestamp
-    // });
-    
-    // Example: Save to Google Sheets
-    // await appendToGoogleSheet([
-    //   leadData.phoneNumber,
-    //   leadData.firstName || leadData.first_name,
-    //   leadData.email,
-    //   leadData.userMessage || leadData.user_message,
-    //   leadData.timestamp
-    // ]);
-    
-    // Example: Send to CRM API
-    // await fetch('https://your-crm.com/api/leads', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify({
-    //     phone: leadData.phoneNumber,
-    //     name: leadData.firstName || leadData.first_name,
-    //     email: leadData.email,
-    //     message: leadData.userMessage || leadData.user_message,
-    //     timestamp: leadData.timestamp
-    //   })
-    // });
-    
-    console.log('💾 BSP lead persistence ready (implement your preferred method)');
-    return true;
-  } catch (error) {
-    console.error('Failed to persist BSP lead:', error);
-    return false;
-  }
-}
-
-// --- BSP Lead Capture Handler ---
+// --- Simple BSP Lead Capture Handler ---
 async function handleBspLead(req, res) {
   console.log('=== BSP LEAD WEBHOOK ===');
   console.log('Body:', JSON.stringify(req.body, null, 2));
   
   try {
-    // Handle both BSP structures:
-    // 1. Your planned structure: { phoneNumber, firstName, email, chatId, subscriberId }
-    // 2. Current actual structure: { first_name, chat_id, user_message, etc. }
-    
-    const leadData = {
-      phoneNumber: req.body.phoneNumber || req.body.chat_id,
-      firstName: req.body.firstName || req.body.first_name,
-      email: req.body.email,
-      chatId: req.body.chatId || req.body.chat_id,
-      subscriberId: req.body.subscriberId,
-      userMessage: req.body.user_message,
-      postbackId: req.body.postbackid,
-      // Include any other fields that might be useful
-      ...req.body
-    };
-    
-    console.log('=== EXTRACTED LEAD DATA ===');
-    console.log('Phone Number:', leadData.phoneNumber);
-    console.log('First Name:', leadData.firstName);
-    console.log('Email:', leadData.email);
-    console.log('Chat ID:', leadData.chatId);
-    console.log('Subscriber ID:', leadData.subscriberId);
-    console.log('User Message:', leadData.userMessage);
-    console.log('Postback ID:', leadData.postbackId);
-
-    if (leadData.phoneNumber) {
-      console.log('✅ LEAD CAPTURED SUCCESSFULLY');
-      
-      // Store the lead data in memory
-      const storedLead = storeBspLead(leadData);
-      
-      // Optionally persist to database
-      await persistBspLead(storedLead);
-      
-      return res.status(200).json({
-        success: true,
-        message: 'Lead received and processed',
-        data: {
-          id: storedLead.id,
-          phoneNumber: storedLead.phoneNumber,
-          firstName: storedLead.firstName,
-          email: storedLead.email,
-          chatId: storedLead.chatId,
-          subscriberId: storedLead.subscriberId,
-          userMessage: storedLead.userMessage,
-          stored: true
-        },
-        timestamp: storedLead.timestamp
-      });
-
-    } else {
-      console.log('❌ No phone number provided');
+    // Validate required fields
+    if (!req.body.phoneNumber && !req.body.chat_id) {
       return res.status(400).json({
         success: false,
-        message: 'No phone number provided in lead data',
-        data: leadData
+        error: 'phoneNumber or chat_id is required'
       });
     }
 
+    if (!req.body.firstName && !req.body.first_name) {
+      return res.status(400).json({
+        success: false,
+        error: 'firstName or first_name is required'
+      });
+    }
+    
+    // Store only the latest lead in global memory (simple!)
+    global.latestBspLead = {
+      phoneNumber: req.body.phoneNumber || req.body.chat_id,
+      firstName: req.body.firstName || req.body.first_name,
+      timestamp: new Date().toISOString(),
+      ...req.body
+    };
+    
+    console.log('✅ BSP Lead captured:', {
+      phone: global.latestBspLead.phoneNumber,
+      name: global.latestBspLead.firstName
+    });
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Lead captured successfully',
+      data: {
+        phoneNumber: global.latestBspLead.phoneNumber,
+        firstName: global.latestBspLead.firstName
+      }
+    });
+
   } catch (error) {
-    console.error('BSP lead processing error:', error);
+    console.error('BSP lead error:', error);
     return res.status(500).json({ 
-      error: 'Internal server error',
-      message: error.message 
+      success: false,
+      error: error.message
     });
   }
 }
@@ -234,12 +101,11 @@ function getUserPhoneFromPayload(decryptedBody) {
   }
 
   // Method 2: Get from latest BSP lead
-  const latestLead = getBspLead('latest');
-  if (latestLead?.phoneNumber) {
-    const digits = latestLead.phoneNumber.replace(/\D/g, '');
+  if (global.latestBspLead?.phoneNumber) {
+    const digits = global.latestBspLead.phoneNumber.replace(/\D/g, '');
     if (digits) {
       const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
-      console.log('📱 Phone from latest BSP lead:', normalizedPhone, `(${latestLead.firstName || 'Unknown'})`);
+      console.log('📱 Phone from BSP lead:', normalizedPhone, `(${global.latestBspLead.firstName || 'Unknown'})`);
       return normalizedPhone;
     }
   }
@@ -526,11 +392,13 @@ async function handleDataExchange(decryptedBody) {
           sceneDescription: scene_description && scene_description.trim() ? scene_description.trim() : null,
           priceOverlay: price_overlay && price_overlay.trim() ? price_overlay.trim() : null,
           userPhone,
+          leadInfo: global.latestBspLead, // Include lead info for context
           decryptedBody
         };
 
         console.log('📤 Sending to process-job function...');
         console.log('🔍 Processing payload size:', JSON.stringify(processingPayload).length);
+        console.log('👤 Lead info being sent:', global.latestBspLead ? `${global.latestBspLead.firstName} (${global.latestBspLead.phoneNumber})` : 'No lead info');
         
         // Non-blocking call to processing function
         const vercelUrl = 'https://image2106.vercel.app';
@@ -601,17 +469,9 @@ async function handleDebugLeads(req, res) {
   console.log('=== DEBUG LEADS ENDPOINT ===');
   
   const debugInfo = {
-    latest: bspLeadStore.latest,
-    totalStored: bspLeadStore.byPhone.size,
-    recentCount: bspLeadStore.recent.length,
-    phoneNumbers: Array.from(bspLeadStore.byPhone.keys()),
-    recentLeads: bspLeadStore.recent.slice(0, 5).map(lead => ({
-      phone: lead.phoneNumber,
-      name: lead.firstName,
-      timestamp: lead.timestamp,
-      id: lead.id
-    })),
-    sessionMappings: Array.from(bspLeadStore.bySession.entries())
+    latestLead: global.latestBspLead,
+    hasLead: !!global.latestBspLead,
+    timestamp: new Date().toISOString()
   };
   
   console.log('Debug info:', JSON.stringify(debugInfo, null, 2));
