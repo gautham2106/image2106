@@ -1,26 +1,108 @@
-// Vercel Node.js API Route for Processing Image Generation Jobs
-// Place this file at: api/process-job.js
+// api/process-image.js
+// Dedicated endpoint for long-running image processing tasks
 
-import { createClient } from '@supabase/supabase-js';
+import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
-// --- CORS Headers ---
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-};
+// Copy all the necessary functions from your main webhook.js file:
+// - generateImageFromAi
+// - generateImageAndSendToUser
+// - uploadGeneratedImageToSupabase
+// - sendWhatsAppImageMessage
+// - createImageCaption
+// - getUserPhoneFromPayload
+// - getBspLead
+// - createSimplePrompt
+
+// You'll need to copy these functions here or extract them to a shared module
 
 // WhatsApp API config
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
-// Supabase config
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'generated-images';
+// BSP Lead Storage (should be shared with main webhook)
+const bspLeadStore = {
+  latest: null,
+  byPhone: new Map(),
+  bySession: new Map(),
+  recent: []
+};
 
-// Simple prompt creation function
+// Copy the BSP functions you need:
+function getBspLead(identifier = 'latest') {
+  if (identifier === 'latest') {
+    return bspLeadStore.latest;
+  }
+  
+  if (bspLeadStore.byPhone.has(identifier)) {
+    return bspLeadStore.byPhone.get(identifier);
+  }
+  
+  if (bspLeadStore.bySession.has(identifier)) {
+    const phone = bspLeadStore.bySession.get(identifier);
+    return bspLeadStore.byPhone.get(phone);
+  }
+  
+  return null;
+}
+
+function getUserPhoneFromPayload(decryptedBody) {
+  console.log('=== PHONE NUMBER DETECTION ===');
+  
+  const flowCandidates = [
+    decryptedBody?.user?.wa_id,
+    decryptedBody?.user?.phone,
+    decryptedBody?.phone_number,
+    decryptedBody?.mobile_number,
+    decryptedBody?.data?.phone_number,
+    decryptedBody?.data?.user_phone,
+    decryptedBody?.data?.mobile_number
+  ];
+
+  const flowPhone = flowCandidates.find((v) => typeof v === 'string' && v.trim().length > 0);
+  
+  if (flowPhone) {
+    const digits = flowPhone.replace(/\D/g, '');
+    if (digits) {
+      const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
+      console.log('📱 Phone from WhatsApp Flow:', normalizedPhone);
+      return normalizedPhone;
+    }
+  }
+
+  const latestLead = getBspLead('latest');
+  if (latestLead?.phoneNumber) {
+    const digits = latestLead.phoneNumber.replace(/\D/g, '');
+    if (digits) {
+      const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
+      console.log('📱 Phone from latest BSP lead:', normalizedPhone, `(${latestLead.firstName || 'Unknown'})`);
+      return normalizedPhone;
+    }
+  }
+
+  console.log('❌ No phone number found in payload or BSP leads');
+  return null;
+}
+
+function createImageCaption(productCategory, priceOverlay, leadInfo) {
+  let caption = '';
+  
+  if (leadInfo?.firstName) {
+    caption += `Hi ${leadInfo.firstName}! `;
+  }
+  
+  caption += `Here's your enhanced ${productCategory}`;
+  
+  if (priceOverlay && priceOverlay.trim()) {
+    caption += ` — ${priceOverlay.trim()}`;
+  }
+  
+  caption += ' image! 🎨✨';
+  
+  return caption;
+}
+
 function createSimplePrompt(productCategory, sceneDescription = null, priceOverlay = null) {
   let prompt = `Create a professional product photo of this ${productCategory}.`;
   
@@ -39,51 +121,42 @@ function createSimplePrompt(productCategory, sceneDescription = null, priceOverl
   return prompt;
 }
 
-// Upload generated image to Supabase Storage
 async function uploadGeneratedImageToSupabase(base64Data, mimeType) {
-  console.log('📤 Uploading to Supabase Storage...');
-  
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    throw new Error('Missing SUPABASE_URL or SUPABASE_KEY environment variables');
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const s3Endpoint = process.env.SUPABASE_S3_ENDPOINT;
+  const s3Region = process.env.SUPABASE_S3_REGION || 'us-east-1';
+  const accessKeyId = process.env.SUPABASE_S3_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.SUPABASE_S3_SECRET_ACCESS_KEY;
+  const bucket = process.env.SUPABASE_S3_BUCKET || 'generated-images';
+
+  if (!supabaseUrl || !s3Endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error('Missing SUPABASE_URL, SUPABASE_S3_ENDPOINT, or S3 credentials');
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  
   const buffer = Buffer.from(base64Data, 'base64');
   const ext = (mimeType && mimeType.split('/')[1]) || 'jpg';
   const filename = `generated-${Date.now()}.${ext}`;
 
-  console.log('📁 Uploading file:', filename, 'to bucket:', SUPABASE_BUCKET);
+  const s3 = new S3Client({
+    region: s3Region,
+    endpoint: s3Endpoint,
+    credentials: { accessKeyId, secretAccessKey },
+    forcePathStyle: true
+  });
 
-  const { data, error } = await supabase.storage
-    .from(SUPABASE_BUCKET)
-    .upload(filename, buffer, {
-      contentType: mimeType || 'image/jpeg',
-      cacheControl: '3600',
-      upsert: false
-    });
+  await s3.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: filename,
+    Body: buffer,
+    ContentType: mimeType || 'image/jpeg'
+  }));
 
-  if (error) {
-    console.error('❌ Supabase upload error:', error);
-    throw new Error(`Supabase upload failed: ${error.message}`);
-  }
-
-  console.log('✅ File uploaded successfully:', data);
-
-  // Get public URL
-  const { data: publicUrlData } = supabase.storage
-    .from(SUPABASE_BUCKET)
-    .getPublicUrl(filename);
-
-  if (!publicUrlData?.publicUrl) {
-    throw new Error('Failed to get public URL from Supabase');
-  }
-
-  console.log('🔗 Public URL generated:', publicUrlData.publicUrl);
-  return publicUrlData.publicUrl;
+  const baseUrl = supabaseUrl.replace(/\/+$/, '');
+  const publicUrl = `${baseUrl}/storage/v1/object/public/${encodeURIComponent(bucket)}/${encodeURIComponent(filename)}`;
+  console.log('Generated image uploaded (S3):', publicUrl);
+  return publicUrl;
 }
 
-// Generate image using Gemini API
 async function generateImageFromAi(productImageBase64, productCategory, sceneDescription = null, priceOverlay = null) {
   console.log('=== GENERATE IMAGE FROM AI ===');
   console.log('Parameters:');
@@ -178,7 +251,7 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
         const generatedBase64 = part.inlineData.data;
         console.log("✅ Image generated successfully");
         
-        console.log("Step 5: Uploading generated image to Supabase...");
+        console.log("Step 5: Uploading generated image to Supabase (S3)...");
         try {
           const publicUrl = await uploadGeneratedImageToSupabase(generatedBase64, generatedMimeType);
           console.log("✅ Generated image uploaded to Supabase:", publicUrl);
@@ -203,21 +276,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   }
 }
 
-// Create personalized image caption
-function createImageCaption(productCategory, priceOverlay, userPhone) {
-  let caption = `Here's your enhanced ${productCategory}`;
-  
-  // Price if provided
-  if (priceOverlay && priceOverlay.trim()) {
-    caption += ` — ${priceOverlay.trim()}`;
-  }
-  
-  caption += ' image! 🎨✨';
-  
-  return caption;
-}
-
-// Send WhatsApp image message
 async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
   if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
   if (!imageUrl) throw new Error('Missing image URL');
@@ -249,147 +307,71 @@ async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
   return data;
 }
 
-// Main processing function
-async function processImageGeneration(jobData) {
-  console.log('🚀 Starting image generation job...');
-  console.log('Job data:', JSON.stringify({
-    productCategory: jobData.productCategory,
-    sceneDescription: jobData.sceneDescription,
-    priceOverlay: jobData.priceOverlay,
-    userPhone: jobData.userPhone,
-    imageDataLength: jobData.actualImageData?.length || 0
-  }, null, 2));
-
+async function generateImageAndSendToUser(decryptedBody, actualImageData, productCategory, sceneDescription, priceOverlay) {
+  console.log('🚀 Starting image generation and user notification...');
+  
   try {
-    // Generate the image
     const imageUrl = await generateImageFromAi(
-      jobData.actualImageData,
-      jobData.productCategory,
-      jobData.sceneDescription,
-      jobData.priceOverlay
+      actualImageData,
+      productCategory.trim(),
+      sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
+      priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
     );
     
     console.log('✅ Image generation successful:', imageUrl);
 
-    // Send to user if phone number is available
-    if (jobData.userPhone) {
-      const caption = createImageCaption(
-        jobData.productCategory, 
-        jobData.priceOverlay, 
-        jobData.leadInfo
-      );
+    const toPhone = getUserPhoneFromPayload(decryptedBody);
+    
+    if (!toPhone) {
+      console.warn('⚠️ Phone number not found; cannot send WhatsApp message');
+    } else {
+      const leadInfo = getBspLead(toPhone) || getBspLead('latest');
+      const caption = createImageCaption(productCategory, priceOverlay, leadInfo);
       
-      console.log('📤 Sending WhatsApp image to:', jobData.userPhone);
+      console.log('📤 Sending WhatsApp image to:', toPhone);
       console.log('📝 Caption:', caption);
-      console.log('👤 Lead info:', JSON.stringify(jobData.leadInfo, null, 2));
       
       try {
-        const waResp = await sendWhatsAppImageMessage(jobData.userPhone, imageUrl, caption);
+        const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
         console.log('✅ WhatsApp image sent successfully:', JSON.stringify(waResp));
       } catch (sendErr) {
         console.error('❌ Failed to send WhatsApp image:', sendErr);
       }
-    } else {
-      console.warn('⚠️ No phone number provided; image generated but not sent');
     }
 
-    return {
-      success: true,
-      imageUrl,
-      userPhone: jobData.userPhone,
-      timestamp: new Date().toISOString()
-    };
-
+    return imageUrl;
   } catch (error) {
-    console.error('❌ Image processing failed:', error);
-    
-    // Try to send error message to user if phone available
-    if (jobData.userPhone) {
-      try {
-        await sendWhatsAppImageMessage(
-          jobData.userPhone, 
-          null, // No image
-          `Sorry, there was an error processing your ${jobData.productCategory} image. Please try again later.`
-        );
-      } catch (sendErr) {
-        console.error('❌ Failed to send error message:', sendErr);
-      }
-    }
-    
+    console.error('❌ Image generation or sending failed:', error);
     throw error;
   }
 }
 
-// --- Main Vercel API Handler ---
 export default async function handler(req, res) {
-  // Handle CORS
-  if (req.method === 'OPTIONS') {
-    res.status(200);
-    Object.entries(corsHeaders).forEach(([key, value]) => {
-      res.setHeader(key, value);
-    });
-    return res.end();
-  }
-
-  // Set CORS headers for all responses
-  Object.entries(corsHeaders).forEach(([key, value]) => {
-    res.setHeader(key, value);
-  });
-
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
+    return res.status(405).json({ error: 'Method not allowed' });
   }
-
-  console.log('=== PROCESS JOB WEBHOOK ===');
-  console.log('Body:', JSON.stringify({
-    ...req.body,
-    actualImageData: req.body.actualImageData ? `[${req.body.actualImageData.length} characters]` : 'missing'
-  }, null, 2));
 
   try {
-    const {
+    const { decryptedBody, actualImageData, productCategory, sceneDescription, priceOverlay } = req.body;
+    
+    console.log('🚀 Processing image in dedicated endpoint...');
+    console.log('Product Category:', productCategory);
+    console.log('Scene Description:', sceneDescription);
+    console.log('Price Overlay:', priceOverlay);
+    
+    const imageUrl = await generateImageAndSendToUser(
+      decryptedBody,
       actualImageData,
       productCategory,
       sceneDescription,
-      priceOverlay,
-      userPhone,
-      decryptedBody
-    } = req.body;
-
-    // Validate required fields
-    if (!actualImageData) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing actualImageData'
-      });
-    }
-
-    if (!productCategory) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing productCategory'
-      });
-    }
-
-    // Process the job
-    const result = await processImageGeneration({
-      actualImageData,
-      productCategory,
-      sceneDescription,
-      priceOverlay,
-      userPhone,
-      decryptedBody
-    });
-
-    return res.status(200).json(result);
-
+      priceOverlay
+    );
+    
+    console.log('✅ Image processing completed:', imageUrl);
+    
+    return res.status(200).json({ success: true, imageUrl });
   } catch (error) {
-    console.error('❌ Process job error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      message: error.message,
-      timestamp: new Date().toISOString()
-    });
+    console.error('❌ Image processing failed:', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
