@@ -531,12 +531,16 @@ async function handleIncomingMessage(body) {
             // Extract sender's WhatsApp ID
             const senderWhatsAppId = message.from;
             
-            // Send flow to the sender
+            // Send simple text first to test
             try {
+              await sendSimpleTextMessage(senderWhatsAppId, "Hello! Your message was received. Let me send you the AI Photo Generator flow...");
+              console.log(`✅ Text message sent to ${senderWhatsAppId}`);
+              
+              // Then try to send the flow
               await sendWhatsAppFlow(senderWhatsAppId);
               console.log(`✅ Flow sent to ${senderWhatsAppId}`);
             } catch (error) {
-              console.error(`❌ Failed to send flow to ${senderWhatsAppId}:`, error);
+              console.error(`❌ Failed to send messages to ${senderWhatsAppId}:`, error);
             }
           });
         }
