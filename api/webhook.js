@@ -1,4 +1,4 @@
-// Vercel Node.js API Route for WhatsApp Flow with Gemini API + BSP Phone Storage
+// Vercel Node.js API Route for WhatsApp Flow with Gemini AI + BSP Lead Capture
 // Place this file at: api/webhook.js
 
 import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
@@ -15,6 +15,95 @@ const corsHeaders = {
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
+
+// --- BSP Lead Capture Handler ---
+async function handleBspLead(req, res) {
+  console.log('=== BSP LEAD WEBHOOK ===');
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  
+  try {
+    // Handle both BSP structures:
+    // 1. Your planned structure: { phoneNumber, firstName, email, chatId, subscriberId }
+    // 2. Current actual structure: { first_name, chat_id, user_message, etc. }
+    
+    const phoneNumber = req.body.phoneNumber || req.body.chat_id;
+    const firstName = req.body.firstName || req.body.first_name;
+    const email = req.body.email;
+    const chatId = req.body.chatId || req.body.chat_id;
+    const subscriberId = req.body.subscriberId;
+    const userMessage = req.body.user_message;
+    const postbackId = req.body.postbackid;
+    
+    console.log('=== EXTRACTED LEAD DATA ===');
+    console.log('Phone Number:', phoneNumber);
+    console.log('First Name:', firstName);
+    console.log('Email:', email);
+    console.log('Chat ID:', chatId);
+    console.log('Subscriber ID:', subscriberId);
+    console.log('User Message:', userMessage);
+    console.log('Postback ID:', postbackId);
+
+    if (phoneNumber) {
+      console.log('✅ LEAD CAPTURED SUCCESSFULLY');
+      
+      // TODO: Add your storage logic here
+      // Examples:
+      
+      // 1. Save to Supabase
+      // const { createClient } = require('@supabase/supabase-js');
+      // const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+      // await supabase.from('leads').insert({
+      //   phone_number: phoneNumber,
+      //   first_name: firstName,
+      //   email: email,
+      //   chat_id: chatId,
+      //   subscriber_id: subscriberId,
+      //   user_message: userMessage,
+      //   created_at: new Date().toISOString()
+      // });
+      
+      // 2. Save to Google Sheets
+      // await appendToGoogleSheet([phoneNumber, firstName, email, userMessage, new Date().toISOString()]);
+      
+      // 3. Send to CRM API
+      // await fetch('https://your-crm.com/api/leads', {
+      //   method: 'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify({
+      //     phone: phoneNumber,
+      //     name: firstName,
+      //     email: email,
+      //     message: userMessage
+      //   })
+      // });
+      
+      console.log('💾 Ready for storage implementation');
+    } else {
+      console.log('❌ No phone number provided');
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Lead received and processed',
+      data: {
+        phoneNumber: phoneNumber || null,
+        firstName: firstName || null,
+        email: email || null,
+        chatId: chatId || null,
+        subscriberId: subscriberId || null,
+        userMessage: userMessage || null
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('BSP lead processing error:', error);
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message 
+    });
+  }
+}
 
 // --- Utility Functions ---
 function validateEnvironmentVars() {
@@ -48,127 +137,6 @@ async function importPrivateKey(privateKeyPem) {
     name: "RSA-OAEP",
     hash: "SHA-256"
   }, false, ["decrypt"]);
-}
-
-// --- BSP Phone Number Storage Handler ---
-async function handleSimpleWebhook(req, res) {
-  try {
-    console.log('=== BSP PHONE NUMBER WEBHOOK ===');
-    console.log('Method:', req.method);
-    console.log('Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-    console.log('Query:', JSON.stringify(req.query, null, 2));
-    
-    // Verify token authentication (make it optional for now since your BSP doesn't send it)
-    const expectedToken = process.env.BSP_WEBHOOK_TOKEN || 'mY-sUpEr-S3cr3t-wh4tsApp-T0k3n';
-    const authHeader = req.headers.authorization;
-    const tokenFromQuery = req.query.token;
-    const tokenFromBody = req.body?.verifyToken;
-    
-    let receivedToken = null;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      receivedToken = authHeader.replace('Bearer ', '');
-    } else if (tokenFromQuery) {
-      receivedToken = tokenFromQuery;
-    } else if (tokenFromBody) {
-      receivedToken = tokenFromBody;
-    }
-    
-    // Skip token verification for now since your BSP doesn't send tokens
-    // TODO: Configure your BSP to send authentication token
-    if (false && receivedToken !== expectedToken) {  // Disabled for now
-      console.log('❌ Token verification failed');
-      console.log('Expected:', expectedToken);
-      console.log('Received:', receivedToken);
-      return res.status(401).json({ 
-        error: 'Unauthorized',
-        message: 'Invalid or missing authentication token'
-      });
-    }
-    
-    console.log('⚠️ Token verification SKIPPED (configure your BSP to send auth token)');
-    
-    // Extract phone number from various possible field names
-    const phoneNumber = 
-      req.body?.phoneNumber || 
-      req.body?.phone || 
-      req.body?.number ||
-      req.body?.from ||
-      req.body?.wa_id ||
-      req.body?.contact ||
-      req.query?.number;
-    
-    // Extract additional fields if present
-    const firstName = req.body?.firstName || req.body?.name || '';
-    const email = req.body?.email || '';
-    const chatId = req.body?.chatId || '';
-    const subscriberId = req.body?.subscriberId || '';
-    
-    console.log('📋 Raw extracted values:');
-    console.log('  - phoneNumber field:', req.body?.phoneNumber);
-    console.log('  - phone field:', req.body?.phone);
-    console.log('  - number field:', req.body?.number);
-    console.log('  - final phoneNumber:', phoneNumber);
-    
-    if (phoneNumber) {
-      console.log('📞 Phone number received:', phoneNumber);
-      console.log('👤 Additional data:');
-      console.log('  - First Name:', firstName || 'not provided');
-      console.log('  - Email:', email || 'not provided');
-      console.log('  - Chat ID:', chatId || 'not provided');
-      console.log('  - Subscriber ID:', subscriberId || 'not provided');
-      
-      // TODO: Add your storage logic here
-      // Examples:
-      
-      // 1. Save to Supabase database
-      // const { createClient } = require('@supabase/supabase-js');
-      // const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
-      // await supabase.from('contacts').insert({
-      //   phone_number: phoneNumber,
-      //   first_name: firstName,
-      //   email: email,
-      //   chat_id: chatId,
-      //   subscriber_id: subscriberId,
-      //   created_at: new Date().toISOString()
-      // });
-      
-      // 2. Save to Google Sheets (if you have Google Sheets API setup)
-      // await appendToGoogleSheet([phoneNumber, firstName, email, new Date().toISOString()]);
-      
-      // 3. Send to another API
-      // await fetch('https://your-crm-api.com/contacts', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ phone: phoneNumber, name: firstName, email })
-      // });
-      
-      // 4. Simple logging for now
-      console.log('✅ Phone number logged successfully');
-      console.log('💾 Ready for storage implementation');
-      
-    } else {
-      console.log('❌ No phone number found in payload');
-      console.log('Available fields:', Object.keys(req.body || {}));
-    }
-    
-    // Always return 200 to acknowledge receipt (important for BSP)
-    return res.status(200).json({ 
-      success: true, 
-      message: 'Phone number received and processed',
-      phoneNumber: phoneNumber || null,
-      timestamp: new Date().toISOString(),
-      receivedFields: Object.keys(req.body || {})
-    });
-    
-  } catch (error) {
-    console.error('❌ BSP webhook error:', error);
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      message: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
 }
 
 // --- Encryption/Decryption Functions ---
@@ -504,7 +472,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
 }
 
 // --- WhatsApp helpers ---
-// Replace your current getUserPhoneFromPayload with this
 function getUserPhoneFromPayload(decryptedBody) {
   const candidates = [
     decryptedBody?.user?.wa_id,
@@ -710,38 +677,26 @@ export default async function handler(req, res) {
     res.setHeader(key, value);
   });
 
-  // FIRST: Check if this is a simple BSP webhook (before any other processing)
+  // FIRST: Check if this is a BSP lead webhook (before any WhatsApp Flow processing)
   if (req.method === 'POST' && req.body) {
-    console.log('🔍 Checking request type...');
-    console.log('Request body keys:', Object.keys(req.body));
+    // BSP structure check: has phoneNumber/firstName/email/chat_id/first_name but no WhatsApp Flow encryption
+    const isBspLead = req.body.phoneNumber !== undefined || 
+                     req.body.firstName !== undefined || 
+                     req.body.email !== undefined ||
+                     req.body.chat_id !== undefined ||
+                     req.body.first_name !== undefined;
     
-    // Check for WhatsApp Flow encryption fields
-    const hasWhatsAppEncryption = !!(req.body.encrypted_aes_key || req.body.encrypted_flow_data || req.body.initial_vector);
+    const isWhatsAppFlow = req.body.encrypted_aes_key !== undefined || 
+                          req.body.encrypted_flow_data !== undefined || 
+                          req.body.initial_vector !== undefined;
     
-    // Check for BSP fields
-    const hasBspFields = !!(req.body.phoneNumber || req.body.phone || req.body.number || 
-                           req.body.firstName || req.body.email || req.body.verifyToken);
-    
-    console.log('Has WhatsApp encryption:', hasWhatsAppEncryption);
-    console.log('Has BSP fields:', hasBspFields);
-    
-    // If no WhatsApp encryption AND has BSP-like fields, route to BSP handler
-    if (!hasWhatsAppEncryption && hasBspFields) {
-      console.log('🔄 Routing to BSP phone number handler');
-      return handleSimpleWebhook(req, res);
-    }
-    
-    // If has WhatsApp encryption, continue to WhatsApp Flow handler
-    if (hasWhatsAppEncryption) {
-      console.log('🔄 Routing to WhatsApp Flow handler');
-      // Continue with WhatsApp Flow logic below
-    } else {
-      console.log('❓ Unknown request type, treating as BSP');
-      return handleSimpleWebhook(req, res);
+    if (isBspLead && !isWhatsAppFlow) {
+      console.log('🔄 Processing BSP lead webhook');
+      return handleBspLead(req, res);
     }
   }
 
-  // Validate environment for WhatsApp Flow (only needed for encrypted flows)
+  // Continue with existing WhatsApp Flow logic
   try {
     validateEnvironmentVars();
   } catch (error) {
@@ -756,23 +711,12 @@ export default async function handler(req, res) {
     const challenge = query['hub.challenge'];
     const verifyToken = process.env.VERIFY_TOKEN;
 
-    // WhatsApp webhook verification
     if (mode === 'subscribe' && token === verifyToken && challenge) {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send(challenge);
-    } 
-    
-    // Simple health check for BSP testing
-    if (!mode && !token && !challenge) {
-      return res.status(200).json({ 
-        status: 'Webhook is active',
-        endpoint: 'https://image2106.vercel.app/webhook',
-        methods: ['GET', 'POST'],
-        timestamp: new Date().toISOString()
-      });
+    } else {
+      return res.status(403).json({ error: 'Forbidden' });
     }
-    
-    return res.status(403).json({ error: 'Forbidden' });
   }
 
   if (req.method === 'POST') {
