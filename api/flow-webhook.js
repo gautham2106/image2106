@@ -210,41 +210,66 @@ async function handleBspLead(req, res) {
 // --- Enhanced WhatsApp Phone Number Detection ---
 function getUserPhoneFromPayload(decryptedBody) {
   console.log('=== PHONE NUMBER DETECTION ===');
+  console.log('Decrypted body user data:', JSON.stringify(decryptedBody?.user, null, 2));
   
   // Method 1: Extract from WhatsApp Flow payload
   const flowCandidates = [
     decryptedBody?.user?.wa_id,
     decryptedBody?.user?.phone,
+    decryptedBody?.user?.phone_number,
     decryptedBody?.phone_number,
     decryptedBody?.mobile_number,
     decryptedBody?.data?.phone_number,
     decryptedBody?.data?.user_phone,
-    decryptedBody?.data?.mobile_number
+    decryptedBody?.data?.mobile_number,
+    decryptedBody?.from,
+    decryptedBody?.user?.from
   ];
 
-  const flowPhone = flowCandidates.find((v) => typeof v === 'string' && v.trim().length > 0);
+  const flowPhone = flowCandidates.find((v) => typeof v === 'string' && v.trim().length > 0 && !v.includes('#'));
   
   if (flowPhone) {
     const digits = flowPhone.replace(/\D/g, '');
-    if (digits) {
+    if (digits && digits.length >= 10) {
       const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
       console.log('📱 Phone from WhatsApp Flow:', normalizedPhone);
       return normalizedPhone;
     }
   }
 
-  // Method 2: Get from latest BSP lead
+  // Method 2: Get from latest BSP lead (check for actual values, not placeholders)
   const latestLead = getBspLead('latest');
-  if (latestLead?.phoneNumber) {
+  console.log('Latest BSP lead:', JSON.stringify(latestLead, null, 2));
+  
+  if (latestLead?.phoneNumber && !latestLead.phoneNumber.includes('#')) {
     const digits = latestLead.phoneNumber.replace(/\D/g, '');
-    if (digits) {
+    if (digits && digits.length >= 10) {
       const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
       console.log('📱 Phone from latest BSP lead:', normalizedPhone, `(${latestLead.firstName || 'Unknown'})`);
       return normalizedPhone;
     }
   }
 
-  console.log('❌ No phone number found in payload or BSP leads');
+  // Method 3: Check chatId from BSP lead (since your payload shows chatId as the phone number)
+  if (latestLead?.chatId && !latestLead.chatId.includes('#')) {
+    const digits = latestLead.chatId.replace(/\D/g, '');
+    if (digits && digits.length >= 10) {
+      const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
+      console.log('📱 Phone from BSP chatId:', normalizedPhone, `(${latestLead.firstName || 'Unknown'})`);
+      return normalizedPhone;
+    }
+  }
+
+  console.log('❌ No valid phone number found in payload or BSP leads');
+  console.log('Available BSP leads:', {
+    latest: bspLeadStore.latest?.phoneNumber || 'none',
+    totalStored: bspLeadStore.byPhone.size,
+    recent: bspLeadStore.recent.slice(0, 3).map(lead => ({ 
+      phone: lead.phoneNumber, 
+      chatId: lead.chatId,
+      name: lead.firstName 
+    }))
+  });
   return null;
 }
 
@@ -452,13 +477,14 @@ async function handleDataExchange(decryptedBody) {
     console.log('=== DATA EXCHANGE ACTION ===');
 
     if (data && typeof data === 'object') {
-      const { scene_description, price_overlay, product_image, product_category } = data;
+      const { scene_description, price_overlay, product_image, product_category, user_phone } = data;
 
       console.log('=== FIELD VALIDATION ===');
       console.log('product_image:', product_image ? 'present' : 'MISSING (REQUIRED)');
       console.log('product_category:', product_category ? `"${product_category}"` : 'MISSING (REQUIRED)');
       console.log('scene_description:', scene_description ? `"${scene_description}"` : 'not provided (optional)');
       console.log('price_overlay:', price_overlay ? `"${price_overlay}"` : 'not provided (optional)');
+      console.log('user_phone:', user_phone ? `"${user_phone}"` : 'not provided');
 
       if (!product_image) {
         return {
@@ -516,8 +542,8 @@ async function handleDataExchange(decryptedBody) {
       console.log('🚀 Proceeding to send job to processing function...');
       
       try {
-        // Get user's phone number for context
-        const userPhone = getUserPhoneFromPayload(decryptedBody);
+        // Use phone from flow data first, fallback to BSP detection
+        const userPhone = user_phone || getUserPhoneFromPayload(decryptedBody);
         
         // Forward to process-job function
         const processingPayload = {
@@ -525,7 +551,9 @@ async function handleDataExchange(decryptedBody) {
           productCategory: product_category.trim(),
           sceneDescription: scene_description && scene_description.trim() ? scene_description.trim() : null,
           priceOverlay: price_overlay && price_overlay.trim() ? price_overlay.trim() : null,
-          userPhone,
+          userPhone, // Use phone from flow data or BSP fallback
+          // Also pass BSP lead info for personalized messages
+          leadInfo: getBspLead(userPhone) || getBspLead('latest'),
           decryptedBody
         };
 
