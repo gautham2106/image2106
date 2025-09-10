@@ -704,11 +704,16 @@ export default async function handler(req, res) {
 
   // NEW: Route to simple BSP webhook if it's a plain phone number payload
   // Check if this is a simple BSP webhook (has phoneNumber but no encryption fields)
-  if (req.method === 'POST' && req.body && 
-      (req.body.phoneNumber || req.body.phone || req.body.number) && 
-      !req.body.encrypted_aes_key) {
-    console.log('🔄 Routing to BSP phone number handler');
-    return handleSimpleWebhook(req, res);
+  if (req.method === 'POST' && req.body) {
+    // Check if this looks like a BSP webhook (has common BSP fields but no WhatsApp encryption)
+    const hasBspFields = req.body.phoneNumber || req.body.phone || req.body.number || 
+                        req.body.firstName || req.body.email || req.body.verifyToken;
+    const hasWhatsAppEncryption = req.body.encrypted_aes_key || req.body.encrypted_flow_data || req.body.initial_vector;
+    
+    if (hasBspFields && !hasWhatsAppEncryption) {
+      console.log('🔄 Routing to BSP phone number handler');
+      return handleSimpleWebhook(req, res);
+    }
   }
 
   // Validate environment for WhatsApp Flow (only needed for encrypted flows)
