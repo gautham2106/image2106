@@ -796,24 +796,32 @@ async function handleDataExchange(decryptedBody) {
 
       console.log('🚀 Starting async image processing...');
       
-      // Process image generation and sending asynchronously (fire and forget)
-      generateImageAndSendToUser(
-        decryptedBody,
-        actualImageData,
-        product_category.trim(),
-        scene_description && scene_description.trim() ? scene_description.trim() : null,
-        price_overlay && price_overlay.trim() ? price_overlay.trim() : null
-      ).then(imageUrl => {
-        console.log('✅ Async image processing completed:', imageUrl);
+      console.log('🚀 Triggering async image processing...');
+      
+      // Get the base URL for the API call
+      const baseUrl = process.env.VERCEL_URL 
+        ? `https://${process.env.VERCEL_URL}` 
+        : req.headers.host 
+        ? `https://${req.headers.host}` 
+        : 'http://localhost:3000';
+      
+      // Make a non-blocking HTTP request to trigger async processing
+      fetch(`${baseUrl}/api/process-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          decryptedBody,
+          actualImageData,
+          productCategory: product_category.trim(),
+          sceneDescription: scene_description && scene_description.trim() ? scene_description.trim() : null,
+          priceOverlay: price_overlay && price_overlay.trim() ? price_overlay.trim() : null
+        })
       }).catch(error => {
-        console.error('❌ Async image processing failed:', error);
+        console.error('❌ Failed to trigger async processing:', error);
       });
 
       // Return success screen immediately
-      return { screen: 'SUCCESS_SCREEN', data: { message: 'Processing your image...' } };    } else {
-      return { screen: 'COLLECT_INFO', data: { error_message: 'No data received. Please fill in the form.' } };
-    }
-  }
+      return { screen: 'SUCCESS_SCREEN', data: { message: 'Processing your image... You will receive it via WhatsApp shortly!' } };
 
   if (action === 'BACK') {
     if (screen === 'COLLECT_IMAGE_SCENE') {
