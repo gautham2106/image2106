@@ -1,20 +1,6 @@
-// api/process-image.js
-// Dedicated endpoint for long-running image processing tasks
-
-import { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } from 'crypto';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-
-// Copy all the necessary functions from your main webhook.js file:
-// - generateImageFromAi
-// - generateImageAndSendToUser
-// - uploadGeneratedImageToSupabase
-// - sendWhatsAppImageMessage
-// - createImageCaption
-// - getUserPhoneFromPayload
-// - getBspLead
-// - createSimplePrompt
-
-// You'll need to copy these functions here or extract them to a shared module
+// api/process-image.js (CommonJS version)
+const { createHash, createHmac, createDecipheriv, createCipheriv, randomBytes } = require('crypto');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 // WhatsApp API config
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
@@ -29,7 +15,6 @@ const bspLeadStore = {
   recent: []
 };
 
-// Copy the BSP functions you need:
 function getBspLead(identifier = 'latest') {
   if (identifier === 'latest') {
     return bspLeadStore.latest;
@@ -346,7 +331,7 @@ async function generateImageAndSendToUser(decryptedBody, actualImageData, produc
   }
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -374,4 +359,4 @@ export default async function handler(req, res) {
     console.error('❌ Image processing failed:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
-}
+};
