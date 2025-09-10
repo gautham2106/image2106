@@ -1,4 +1,5 @@
 // Vercel Node.js API Route for Processing Image Generation Jobs
+//This is new deploy
 // Place this file at: api/process-job.js
 
 import { createClient } from '@supabase/supabase-js';
