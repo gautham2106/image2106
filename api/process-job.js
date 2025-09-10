@@ -9,6 +9,13 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
 };
+// PING endpoint to keep function warm
+if (req.method === 'GET') {
+  return res.status(200).json({
+    status: 'alive',
+    timestamp: new Date().toISOString()
+  });
+}
 
 // WhatsApp API config
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
