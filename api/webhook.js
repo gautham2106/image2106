@@ -16,6 +16,123 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
+// --- BSP Lead Storage ---
+// Simple in-memory storage for BSP leads (resets on server restart)
+const bspLeadStore = {
+  latest: null,           // Most recent lead
+  byPhone: new Map(),     // Map phone -> lead data
+  bySession: new Map(),   // Map session/chat_id -> phone
+  recent: []              // Array of recent leads (max 100)
+};
+
+// Store BSP lead data
+function storeBspLead(leadData) {
+  const phoneNumber = leadData.phoneNumber || leadData.chat_id;
+  const timestamp = new Date().toISOString();
+  
+  const enrichedLead = {
+    ...leadData,
+    phoneNumber,
+    timestamp,
+    id: `${phoneNumber}-${Date.now()}`
+  };
+  
+  // Store as latest
+  bspLeadStore.latest = enrichedLead;
+  
+  // Store by phone number
+  if (phoneNumber) {
+    bspLeadStore.byPhone.set(phoneNumber, enrichedLead);
+    
+    // Store session mapping
+    if (leadData.chatId || leadData.chat_id) {
+      bspLeadStore.bySession.set(leadData.chatId || leadData.chat_id, phoneNumber);
+    }
+  }
+  
+  // Add to recent leads (keep only last 100)
+  bspLeadStore.recent.unshift(enrichedLead);
+  if (bspLeadStore.recent.length > 100) {
+    bspLeadStore.recent = bspLeadStore.recent.slice(0, 100);
+  }
+  
+  console.log('📍 BSP Lead stored:', {
+    phone: phoneNumber,
+    name: leadData.firstName || leadData.first_name,
+    totalStored: bspLeadStore.byPhone.size,
+    recentCount: bspLeadStore.recent.length
+  });
+  
+  return enrichedLead;
+}
+
+// Get BSP lead data
+function getBspLead(identifier = 'latest') {
+  if (identifier === 'latest') {
+    return bspLeadStore.latest;
+  }
+  
+  // Try to get by phone number
+  if (bspLeadStore.byPhone.has(identifier)) {
+    return bspLeadStore.byPhone.get(identifier);
+  }
+  
+  // Try to get by session/chat_id
+  if (bspLeadStore.bySession.has(identifier)) {
+    const phone = bspLeadStore.bySession.get(identifier);
+    return bspLeadStore.byPhone.get(phone);
+  }
+  
+  return null;
+}
+
+// Optional: Persist to database (implement based on your needs)
+async function persistBspLead(leadData) {
+  try {
+    // Example: Save to Supabase
+    // const { createClient } = require('@supabase/supabase-js');
+    // const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    // await supabase.from('bsp_leads').upsert({
+    //   phone_number: leadData.phoneNumber,
+    //   first_name: leadData.firstName || leadData.first_name,
+    //   email: leadData.email,
+    //   chat_id: leadData.chatId || leadData.chat_id,
+    //   subscriber_id: leadData.subscriberId,
+    //   user_message: leadData.userMessage || leadData.user_message,
+    //   postback_id: leadData.postbackId || leadData.postbackid,
+    //   created_at: leadData.timestamp
+    // });
+    
+    // Example: Save to Google Sheets
+    // await appendToGoogleSheet([
+    //   leadData.phoneNumber,
+    //   leadData.firstName || leadData.first_name,
+    //   leadData.email,
+    //   leadData.userMessage || leadData.user_message,
+    //   leadData.timestamp
+    // ]);
+    
+    // Example: Send to CRM API
+    // await fetch('https://your-crm.com/api/leads', {
+    //   method: 'POST',
+    //   headers: { 'Content-Type': 'application/json' },
+    //   body: JSON.stringify({
+    //     phone: leadData.phoneNumber,
+    //     name: leadData.firstName || leadData.first_name,
+    //     email: leadData.email,
+    //     message: leadData.userMessage || leadData.user_message,
+    //     timestamp: leadData.timestamp
+    //   })
+    // });
+    
+    console.log('💾 BSP lead persistence ready (implement your preferred method)');
+    return true;
+  } catch (error) {
+    console.error('Failed to persist BSP lead:', error);
+    return false;
+  }
+}
+
 // --- BSP Lead Capture Handler ---
 async function handleBspLead(req, res) {
   console.log('=== BSP LEAD WEBHOOK ===');
@@ -26,75 +143,60 @@ async function handleBspLead(req, res) {
     // 1. Your planned structure: { phoneNumber, firstName, email, chatId, subscriberId }
     // 2. Current actual structure: { first_name, chat_id, user_message, etc. }
     
-    const phoneNumber = req.body.phoneNumber || req.body.chat_id;
-    const firstName = req.body.firstName || req.body.first_name;
-    const email = req.body.email;
-    const chatId = req.body.chatId || req.body.chat_id;
-    const subscriberId = req.body.subscriberId;
-    const userMessage = req.body.user_message;
-    const postbackId = req.body.postbackid;
+    const leadData = {
+      phoneNumber: req.body.phoneNumber || req.body.chat_id,
+      firstName: req.body.firstName || req.body.first_name,
+      email: req.body.email,
+      chatId: req.body.chatId || req.body.chat_id,
+      subscriberId: req.body.subscriberId,
+      userMessage: req.body.user_message,
+      postbackId: req.body.postbackid,
+      // Include any other fields that might be useful
+      ...req.body
+    };
     
     console.log('=== EXTRACTED LEAD DATA ===');
-    console.log('Phone Number:', phoneNumber);
-    console.log('First Name:', firstName);
-    console.log('Email:', email);
-    console.log('Chat ID:', chatId);
-    console.log('Subscriber ID:', subscriberId);
-    console.log('User Message:', userMessage);
-    console.log('Postback ID:', postbackId);
+    console.log('Phone Number:', leadData.phoneNumber);
+    console.log('First Name:', leadData.firstName);
+    console.log('Email:', leadData.email);
+    console.log('Chat ID:', leadData.chatId);
+    console.log('Subscriber ID:', leadData.subscriberId);
+    console.log('User Message:', leadData.userMessage);
+    console.log('Postback ID:', leadData.postbackId);
 
-    if (phoneNumber) {
+    if (leadData.phoneNumber) {
       console.log('✅ LEAD CAPTURED SUCCESSFULLY');
       
-      // TODO: Add your storage logic here
-      // Examples:
+      // Store the lead data in memory
+      const storedLead = storeBspLead(leadData);
       
-      // 1. Save to Supabase
-      // const { createClient } = require('@supabase/supabase-js');
-      // const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
-      // await supabase.from('leads').insert({
-      //   phone_number: phoneNumber,
-      //   first_name: firstName,
-      //   email: email,
-      //   chat_id: chatId,
-      //   subscriber_id: subscriberId,
-      //   user_message: userMessage,
-      //   created_at: new Date().toISOString()
-      // });
+      // Optionally persist to database
+      await persistBspLead(storedLead);
       
-      // 2. Save to Google Sheets
-      // await appendToGoogleSheet([phoneNumber, firstName, email, userMessage, new Date().toISOString()]);
-      
-      // 3. Send to CRM API
-      // await fetch('https://your-crm.com/api/leads', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({
-      //     phone: phoneNumber,
-      //     name: firstName,
-      //     email: email,
-      //     message: userMessage
-      //   })
-      // });
-      
-      console.log('💾 Ready for storage implementation');
+      return res.status(200).json({
+        success: true,
+        message: 'Lead received and processed',
+        data: {
+          id: storedLead.id,
+          phoneNumber: storedLead.phoneNumber,
+          firstName: storedLead.firstName,
+          email: storedLead.email,
+          chatId: storedLead.chatId,
+          subscriberId: storedLead.subscriberId,
+          userMessage: storedLead.userMessage,
+          stored: true
+        },
+        timestamp: storedLead.timestamp
+      });
+
     } else {
       console.log('❌ No phone number provided');
+      return res.status(400).json({
+        success: false,
+        message: 'No phone number provided in lead data',
+        data: leadData
+      });
     }
-
-    return res.status(200).json({
-      success: true,
-      message: 'Lead received and processed',
-      data: {
-        phoneNumber: phoneNumber || null,
-        firstName: firstName || null,
-        email: email || null,
-        chatId: chatId || null,
-        subscriberId: subscriberId || null,
-        userMessage: userMessage || null
-      },
-      timestamp: new Date().toISOString()
-    });
 
   } catch (error) {
     console.error('BSP lead processing error:', error);
@@ -103,6 +205,121 @@ async function handleBspLead(req, res) {
       message: error.message 
     });
   }
+}
+
+// --- Enhanced WhatsApp Phone Number Detection ---
+function getUserPhoneFromPayload(decryptedBody) {
+  console.log('=== PHONE NUMBER DETECTION ===');
+  
+  // Method 1: Extract from WhatsApp Flow payload
+  const flowCandidates = [
+    decryptedBody?.user?.wa_id,
+    decryptedBody?.user?.phone,
+    decryptedBody?.phone_number,
+    decryptedBody?.mobile_number,
+    decryptedBody?.data?.phone_number,
+    decryptedBody?.data?.user_phone,
+    decryptedBody?.data?.mobile_number
+  ];
+
+  const flowPhone = flowCandidates.find((v) => typeof v === 'string' && v.trim().length > 0);
+  
+  if (flowPhone) {
+    const digits = flowPhone.replace(/\D/g, '');
+    if (digits) {
+      const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
+      console.log('📱 Phone from WhatsApp Flow:', normalizedPhone);
+      return normalizedPhone;
+    }
+  }
+
+  // Method 2: Get from latest BSP lead
+  const latestLead = getBspLead('latest');
+  if (latestLead?.phoneNumber) {
+    const digits = latestLead.phoneNumber.replace(/\D/g, '');
+    if (digits) {
+      const normalizedPhone = digits.length === 10 ? `91${digits}` : digits;
+      console.log('📱 Phone from latest BSP lead:', normalizedPhone, `(${latestLead.firstName || 'Unknown'})`);
+      return normalizedPhone;
+    }
+  }
+
+  console.log('❌ No phone number found in payload or BSP leads');
+  return null;
+}
+
+// --- Enhanced Image Generation with BSP Integration ---
+async function generateImageAndSendToUser(decryptedBody, actualImageData, productCategory, sceneDescription, priceOverlay) {
+  console.log('🚀 Starting image generation and user notification...');
+  
+  try {
+    // Generate the image
+    const imageUrl = await generateImageFromAi(
+      actualImageData,
+      productCategory.trim(),
+      sceneDescription && sceneDescription.trim() ? sceneDescription.trim() : null,
+      priceOverlay && priceOverlay.trim() ? priceOverlay.trim() : null
+    );
+    
+    console.log('✅ Image generation successful:', imageUrl);
+
+    // Get user's phone number (from Flow payload or BSP lead)
+    const toPhone = getUserPhoneFromPayload(decryptedBody);
+    
+    if (!toPhone) {
+      console.warn('⚠️ Phone number not found; cannot send WhatsApp message');
+      console.log('Available BSP leads:', {
+        latest: bspLeadStore.latest?.phoneNumber || 'none',
+        totalStored: bspLeadStore.byPhone.size,
+        recent: bspLeadStore.recent.slice(0, 3).map(lead => ({ 
+          phone: lead.phoneNumber, 
+          name: lead.firstName 
+        }))
+      });
+    } else {
+      // Get lead info for personalized message
+      const leadInfo = getBspLead(toPhone) || getBspLead('latest');
+      
+      const caption = createImageCaption(productCategory, priceOverlay, leadInfo);
+      
+      console.log('📤 Sending WhatsApp image to:', toPhone);
+      console.log('📝 Caption:', caption);
+      
+      try {
+        const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
+        console.log('✅ WhatsApp image sent successfully:', JSON.stringify(waResp));
+      } catch (sendErr) {
+        console.error('❌ Failed to send WhatsApp image:', sendErr);
+      }
+    }
+
+    return imageUrl;
+  } catch (error) {
+    console.error('❌ Image generation or sending failed:', error);
+    throw error;
+  }
+}
+
+// Create personalized image caption
+function createImageCaption(productCategory, priceOverlay, leadInfo) {
+  let caption = '';
+  
+  // Personalized greeting if we have lead info
+  if (leadInfo?.firstName) {
+    caption += `Hi ${leadInfo.firstName}! `;
+  }
+  
+  // Product info
+  caption += `Here's your enhanced ${productCategory}`;
+  
+  // Price if provided
+  if (priceOverlay && priceOverlay.trim()) {
+    caption += ` — ${priceOverlay.trim()}`;
+  }
+  
+  caption += ' image! 🎨✨';
+  
+  return caption;
 }
 
 // --- Utility Functions ---
@@ -471,29 +688,6 @@ async function generateImageFromAi(productImageBase64, productCategory, sceneDes
   }
 }
 
-// --- WhatsApp helpers ---
-function getUserPhoneFromPayload(decryptedBody) {
-  const candidates = [
-    decryptedBody?.user?.wa_id,
-    decryptedBody?.user?.phone,
-    decryptedBody?.phone_number,
-    decryptedBody?.mobile_number,
-    decryptedBody?.data?.phone_number,
-    decryptedBody?.data?.user_phone,
-    decryptedBody?.data?.mobile_number
-  ];
-
-  const raw = candidates.find((v) => typeof v === 'string' && v.trim().length > 0);
-  if (!raw) return null;
-
-  const digits = raw.replace(/\D/g, '');
-  if (!digits) return null;
-
-  // Normalize India numbers: if 10 digits, prefix with 91
-  if (digits.length === 10) return `91${digits}`;
-  return digits; // assume already E.164 without plus
-}
-
 async function sendWhatsAppImageMessage(toE164, imageUrl, caption) {
   if (!toE164) throw new Error('Missing recipient phone number (E.164 format)');
   if (!imageUrl) throw new Error('Missing image URL');
@@ -600,37 +794,21 @@ async function handleDataExchange(decryptedBody) {
         };
       }
 
-      console.log('🚀 Proceeding with image generation...');
+      console.log('🚀 Proceeding with enhanced image generation and BSP integration...');
       
       try {
-        const imageUrl = await generateImageFromAi(
+        // Use the enhanced function that includes BSP integration
+        const imageUrl = await generateImageAndSendToUser(
+          decryptedBody,
           actualImageData,
           product_category.trim(),
           scene_description && scene_description.trim() ? scene_description.trim() : null,
           price_overlay && price_overlay.trim() ? price_overlay.trim() : null
         );
-        
-        console.log('✅ Image generation successful:', imageUrl);
-
-        // Send to user on WhatsApp using Supabase public URL
-        try {
-          const toPhone = getUserPhoneFromPayload(decryptedBody);
-          if (!toPhone) {
-            console.warn('Phone number not found in payload; skipping WhatsApp send');
-          } else {
-            const caption = (price_overlay && price_overlay.trim())
-              ? `${product_category.trim()} — ${price_overlay.trim()}`
-              : product_category.trim();
-            const waResp = await sendWhatsAppImageMessage(toPhone, imageUrl, caption);
-            console.log('✅ WhatsApp image sent:', JSON.stringify(waResp));
-          }
-        } catch (sendErr) {
-          console.error('❌ Failed to send WhatsApp image:', sendErr);
-        }
 
         return { screen: 'SUCCESS_SCREEN', data: { image_url: imageUrl } };
       } catch (e) {
-        console.error('❌ Image generation failed:', e);
+        console.error('❌ Image generation or sending failed:', e);
         return {
           screen: 'COLLECT_IMAGE_SCENE',
           data: { error_message: `Image generation failed: ${e.message}. Please try again.` }
@@ -661,6 +839,34 @@ async function handleErrorNotification(decryptedBody) {
   return { data: { acknowledged: true } };
 }
 
+// --- Debug endpoint to check BSP lead storage ---
+async function handleDebugLeads(req, res) {
+  console.log('=== DEBUG LEADS ENDPOINT ===');
+  
+  const debugInfo = {
+    latest: bspLeadStore.latest,
+    totalStored: bspLeadStore.byPhone.size,
+    recentCount: bspLeadStore.recent.length,
+    phoneNumbers: Array.from(bspLeadStore.byPhone.keys()),
+    recentLeads: bspLeadStore.recent.slice(0, 5).map(lead => ({
+      phone: lead.phoneNumber,
+      name: lead.firstName,
+      timestamp: lead.timestamp,
+      id: lead.id
+    })),
+    sessionMappings: Array.from(bspLeadStore.bySession.entries())
+  };
+  
+  console.log('Debug info:', JSON.stringify(debugInfo, null, 2));
+  
+  return res.status(200).json({
+    success: true,
+    message: 'BSP Lead Storage Debug Info',
+    data: debugInfo,
+    timestamp: new Date().toISOString()
+  });
+}
+
 // --- Main Vercel API Handler ---
 export default async function handler(req, res) {
   // Handle CORS
@@ -676,6 +882,11 @@ export default async function handler(req, res) {
   Object.entries(corsHeaders).forEach(([key, value]) => {
     res.setHeader(key, value);
   });
+
+  // DEBUG ENDPOINT: Check BSP lead storage
+  if (req.method === 'GET' && req.url?.includes('/debug-leads')) {
+    return handleDebugLeads(req, res);
+  }
 
   // FIRST: Check if this is a BSP lead webhook (before any WhatsApp Flow processing)
   if (req.method === 'POST' && req.body) {
