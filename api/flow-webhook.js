@@ -532,7 +532,7 @@ async function handleDataExchange(decryptedBody) {
         console.log('📤 Sending to process-job function...');
         
         // Non-blocking call to processing function
-        const vercelUrl = process.env.VERCEL_URL || 'http://localhost:3000';
+        const vercelUrl = 'https://image2106.vercel.app';
         fetch(`${vercelUrl}/api/process-job`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
